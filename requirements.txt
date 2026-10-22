@@ -1,0 +1,15 @@
+sounddevice>=0.4.6
+numpy>=1.26
+requests>=2.31
+python-dotenv>=1.0
+openwakeword>=0.6
+onnxruntime>=1.17
+pillow>=10.0
+pystray>=0.19
+pynput>=1.7
+edge-tts>=6.1
+comtypes
+pywinauto
+pycaw
+send2trash
+faster-whisper
