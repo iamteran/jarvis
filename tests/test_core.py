@@ -121,6 +121,9 @@ class TestRouter(TempDBTest):
         self._browser = mock.patch("webbrowser.open")
         self._browser.start()
         self.addCleanup(self._browser.stop)
+        self._yt = mock.patch("jarvis.skills.youtube.find_first", return_value="dQw4w9WgXcQ")
+        self._yt.start()
+        self.addCleanup(self._yt.stop)
 
     def test_schedule_creation_and_query(self) -> None:
         handled, reply = self.router.handle("set an appointment on 12 October at 7:30")
@@ -139,6 +142,23 @@ class TestRouter(TempDBTest):
         handled, reply = self.router.handle("open youtube and play any song")
         self.assertTrue(handled)
         self.assertIn("YouTube", reply)
+
+    def test_play_opens_the_video_not_the_results(self) -> None:
+        calls: list[str] = []
+        with mock.patch("webbrowser.open", side_effect=lambda url, *a, **k: calls.append(url)):
+            handled, reply = self.router.handle("play yellow by coldplay")
+        self.assertTrue(handled)
+        self.assertIn("Playing", reply)
+        self.assertTrue(
+            any("watch?v=" in url and "autoplay=1" in url for url in calls),
+            f"expected a watch URL, got {calls}",
+        )
+
+    def test_search_on_youtube_does_not_claim_to_play(self) -> None:
+        handled, reply = self.router.handle("search cats on youtube")
+        self.assertTrue(handled)
+        self.assertIn("Searching", reply)
+        self.assertNotIn("Playing", reply)
 
     def test_compound_open_then_search(self) -> None:
         launched: list[str] = []
@@ -329,6 +349,23 @@ class TestSpeakerCleaning(unittest.TestCase):
         result = clean_for_speech("**Bold** and *italic* and # Heading")
         self.assertNotIn("*", result)
         self.assertNotIn("#", result)
+
+
+class TestYouTubeSearch(unittest.TestCase):
+    def test_first_video_id_from_nested_json(self) -> None:
+        from jarvis.skills.youtube import _first_video_id
+
+        payload = {
+            "contents": [
+                {"adSlotRenderer": {"x": 1}},
+                {"itemSectionRenderer": {"contents": [
+                    {"videoRenderer": {"videoId": "abc12345678"}},
+                    {"videoRenderer": {"videoId": "zzz99999999"}},
+                ]}},
+            ]
+        }
+        self.assertEqual(_first_video_id(payload), "abc12345678")
+        self.assertIsNone(_first_video_id({"contents": []}))
 
 
 if __name__ == "__main__":

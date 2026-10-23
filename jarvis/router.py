@@ -91,7 +91,7 @@ def _is_generic_title(title: str) -> bool:
 # search *of* Chrome, and the compound handler below gets both right.
 SITE_SEARCH_RE = re.compile(
     r"^(?:open|go to|launch)\s+(?P<site>youtube|google)\s+and\s+"
-    r"(?:search|play|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s*$", re.I)
+    r"(?P<verb>search|play|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s*$", re.I)
 PLAY_RE = re.compile(r"^(?:play|put on|start playing)\s+(?P<query>.+?)(?:\s+on youtube)?\s*$", re.I)
 SEARCH_ON_RE = re.compile(
     r"^(?:search|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s+on\s+(?P<site>youtube|google)\s*$", re.I)
@@ -213,7 +213,11 @@ class Router:
         # "open youtube and play any song" — open the site at the searched query.
         match = SITE_SEARCH_RE.match(clean)
         if match:
-            return True, self._site_search(match.group("site"), match.group("query"))
+            return True, self._site_search(
+                match.group("site"),
+                match.group("query"),
+                play=match.group("verb").lower() == "play",
+            )
         match = SEARCH_ON_RE.match(clean)
         if match:
             return True, self._site_search(match.group("site"), match.group("query"))
@@ -221,7 +225,7 @@ class Router:
         if match:
             query = re.sub(r"\s+on\s+youtub\w*$", "", match.group("query").strip(), flags=re.I)
             if query and len(query) > 1:
-                return True, self._site_search("youtube", query)
+                return True, self._site_search("youtube", query, play=True)
 
         # Compound requests: "open chrome and search youtube" should do both. Each clause
         # is handled on its own; if one is unclear we still report the ones that ran.
@@ -435,9 +439,11 @@ class Router:
         return apps_skill.normalize(target) in apps_skill.SITE_ALIASES
 
     @staticmethod
-    def _site_search(site: str, query: str) -> str:
-        """Open YouTube/Google already showing results for `query`."""
+    def _site_search(site: str, query: str, play: bool = False) -> str:
+        """Open YouTube/Google with `query`; for "play", start the first YouTube video."""
         import webbrowser
+
+        from .skills import youtube as youtube_skill
 
         site = (site or "").strip().lower()
         query = (query or "").strip(" .!?")
@@ -445,8 +451,10 @@ class Router:
             return "What should I look for, sir?"
         encoded = re.sub(r"\s+", "+", query)
         if "youtube" in site:
+            if play:
+                return youtube_skill.play(query)[1]
             webbrowser.open(f"https://www.youtube.com/results?search_query={encoded}")
-            return f"Playing {query} on YouTube, sir."
+            return f"Searching YouTube for {query}, sir."
         webbrowser.open(f"https://www.google.com/search?q={encoded}")
         return f"Searching for {query}, sir."
 
