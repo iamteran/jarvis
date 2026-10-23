@@ -84,6 +84,20 @@ def first_function_call(data: dict[str, Any]) -> dict[str, Any] | None:
     return calls[0] if calls else None
 
 
+def response_parts(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The model's raw parts from the first candidate.
+
+    Gemini 3 attaches a `thoughtSignature` to each `functionCall` part and rejects the
+    follow-up request (HTTP 400) unless that signature is echoed back verbatim. Building
+    fresh `functionCall` parts loses it, so tool loops must replay these parts as-is.
+    """
+    for cand in data.get("candidates", []) or []:
+        parts = cand.get("content", {}).get("parts", []) or []
+        if parts:
+            return [part for part in parts if isinstance(part, dict)]
+    return []
+
+
 def function_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Every `functionCall` part in a Gemini response.
 

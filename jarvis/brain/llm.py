@@ -18,7 +18,7 @@ import logging
 import time
 from typing import Iterator
 
-from ..ai import DeepSeek, Gemini, Groq, extract_text, function_calls
+from ..ai import DeepSeek, Gemini, Groq, extract_text, function_calls, response_parts
 from ..config import CONFIG
 from ..memory import Memory
 from ..tools import Tools
@@ -235,14 +235,17 @@ class Brain:
                         return extract_text(data).strip()
                     log.info("gemini tool round %d/%d: model requested %d call(s)",
                              round_index + 1, MAX_TOOL_ROUNDS, len(calls))
-                    contents.append({
-                        "role": "model",
-                        "parts": [
+                    # Replay the model's parts verbatim: Gemini 3 signs each functionCall
+                    # with a thoughtSignature and 400s if the follow-up request drops it.
+                    call_parts = [part for part in response_parts(data)
+                                  if isinstance(part.get("functionCall"), dict)]
+                    if not call_parts:
+                        call_parts = [
                             {"functionCall": {"name": call.get("name", ""),
                                               "args": call.get("args") or {}}}
                             for call in calls
-                        ],
-                    })
+                        ]
+                    contents.append({"role": "model", "parts": call_parts})
                     responses = []
                     for call in calls:
                         name = call.get("name", "")
