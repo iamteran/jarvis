@@ -41,6 +41,8 @@ in `.env` (see `.env.example`).
 | Say **"Hey Jarvis"** | beeps, orb turns cyan, starts listening |
 | Talk | records until you pause (~0.75 s of silence) |
 | "open chrome" / "open notepad" / "launch whatsapp" | opens it — **instantly, no network** |
+| **"open chrome and search youtube"** | does both actions, in order |
+| **"open crhome"** / "open youtub" | guesses the nearest installed app or known site and says what it assumed |
 | "go to youtube" / "open github.com" / "search for flights" | opens the browser |
 | "volume up" / "turn it down" / "mute" | changes system volume |
 | "set the volume to 30" | exact level (Windows Core Audio) |
@@ -58,7 +60,7 @@ in `.env` (see `.env.example`).
 | **"read report.docx"** / "summarise my CV" | reads txt/md/docx/pdf/xlsx/pptx locally |
 | **"delete my cv"** | asks *"Shall I move … to the Recycle Bin?"* — only yes runs it |
 | "what windows are open" | lists them |
-| Anything else | full conversation (DeepSeek → Gemini) |
+| Anything else | full conversation (Grok → Gemini) |
 | Talk over it, or `Ctrl+Space` | interrupts it (barge-in) |
 | Stay quiet after an answer | 8 s follow-up window, then it sleeps |
 

@@ -140,6 +140,68 @@ class TestRouter(TempDBTest):
         self.assertTrue(handled)
         self.assertIn("YouTube", reply)
 
+    def test_compound_open_then_search(self) -> None:
+        launched: list[str] = []
+        sites: list[str] = []
+        self.router.apps.launch_app = lambda q: launched.append(q) or (True, f"[launch {q}]")
+        self.router.apps.open_site = lambda q: sites.append(q) or (True, f"[site {q}]")
+        handled, reply = self.router.handle("open chrome and search youtube")
+        self.assertTrue(handled)
+        self.assertIn("[launch chrome]", reply)
+        self.assertEqual(launched, ["chrome"], "only the app clause should launch an app")
+        self.assertEqual([s.lower() for s in sites], ["youtube"])
+
+    def test_misheard_search_is_repaired(self) -> None:
+        launched: list[str] = []
+        sites: list[str] = []
+        self.router.apps.launch_app = lambda q: launched.append(q) or (True, f"[launch {q}]")
+        self.router.apps.open_site = lambda q: sites.append(q) or (True, f"[site {q}]")
+        handled, reply = self.router.handle("open chrome and such YouTube")
+        self.assertTrue(handled)
+        self.assertIn("[launch chrome]", reply)
+        self.assertEqual(launched, ["chrome"])
+        self.assertEqual([s.lower() for s in sites], ["youtube"])
+        self.assertNotIn("couldn't find", reply.lower())
+
+    def test_compound_bare_app_after_and(self) -> None:
+        launched: list[str] = []
+        self.router.apps.names = lambda: ["google chrome", "notepad"]
+        self.router.apps.launch_app = lambda q: launched.append(q) or (True, f"[launch {q}]")
+        handled, _reply = self.router.handle("open chrome and notepad")
+        self.assertTrue(handled)
+        self.assertEqual(launched, ["chrome", "notepad"])
+
+    def test_partial_compound_still_reports_the_action(self) -> None:
+        launched: list[str] = []
+        self.router.apps.launch_app = lambda q: launched.append(q) or (True, f"[launch {q}]")
+        handled, reply = self.router.handle("open chrome and flibbertigibbet")
+        self.assertTrue(handled)
+        self.assertIn("[launch chrome]", reply)
+        self.assertIn("didn't catch", reply.lower())
+        self.assertEqual(launched, ["chrome"], "the whole sentence must not be launched as an app")
+
+    def test_accent_guesses_the_intended_app_or_site(self) -> None:
+        launched: list[str] = []
+        self.router.apps.names = lambda: ["google chrome", "notepad", "calculator"]
+        self.router.apps.launch_app = (
+            lambda q: launched.append(q) or (True, f"[launch {q}]")
+            if q in ("google chrome", "notepad")
+            else (False, f"I couldn't find {q}")
+        )
+        handled, reply = self.router.handle("open crhome")
+        self.assertTrue(handled)
+        self.assertEqual(launched, ["google chrome"])
+        self.assertIn("took that as opening chrome", reply.lower())
+        handled, reply = self.router.handle("open youtub")
+        self.assertTrue(handled)
+        self.assertIn("youtube", reply.lower())
+
+    def test_repair_leaves_ordinary_speech_alone(self) -> None:
+        from jarvis.router import _repair_accent
+
+        self.assertEqual(_repair_accent("what app is this"), "what app is this")
+        self.assertEqual(_repair_accent("such a good day"), "such a good day")
+
     def test_plain_commands(self) -> None:
         for phrase in ("open notepad", "open chrome", "what time is it",
                        "open the desktop", "list windows"):

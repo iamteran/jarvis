@@ -8,6 +8,7 @@ answered locally in well under a second — and they still work when the network
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 
@@ -21,7 +22,31 @@ from .skills import system as system_skill
 
 log = logging.getLogger("router")
 
-DELETE_RE = re.compile(r"^(?:delete|remove|trash)\s+(?:the\s+)?(?:file\s+)?(?P<path>.+?)\s*$", re.I)
+# --- accent / mishearing repairs (applied before routing) ---
+_ACCENT_REPAIRS = (
+    (re.compile(r"\byou\s*tube\b", re.I), "youtube"),
+    (re.compile(r"\byou\s*toob\b", re.I), "youtube"),
+    (re.compile(r"\butube\b", re.I), "youtube"),
+    (re.compile(r"\byoo\s*tube\b", re.I), "youtube"),
+    (re.compile(r"\byoutub\w*\b", re.I), "youtube"),
+    (re.compile(r"\bgoogl\w*\b", re.I), "google"),
+    (re.compile(r"\bchro(?:m|me|am)\b", re.I), "chrome"),
+    (re.compile(r"\bcrhome\b", re.I), "chrome"),
+    (re.compile(r"\bchr[o0]me\b", re.I), "chrome"),
+    (re.compile(r"\bnotep[ae]d\b", re.I), "notepad"),
+    (re.compile(r"\bnote\s*pad\b", re.I), "notepad"),
+    (re.compile(r"\bfile\s*explor(?:er)?\b", re.I), "file explorer"),
+    (re.compile(r"\bexplor(?:er)?\b(?!\s+window)", re.I), "file explorer"),
+    (re.compile(r"\bpower\s*shell\b", re.I), "powershell"),
+    (re.compile(r"\bterm\s*inal\b", re.I), "terminal"),
+    (re.compile(r"\bvs\s*code\b", re.I), "visual studio code"),
+    (re.compile(r"\bvscod(?:e)?\b", re.I), "visual studio code"),
+    # "search" gets garbled a lot by Whisper with accents
+    (re.compile(r"\band\s+such\b", re.I), "and search"),
+    (re.compile(r"\band\s+sutch\b", re.I), "and search"),
+    (re.compile(r"\band\s+s[ae]rch\b", re.I), "and search"),
+    (re.compile(r"\bs[ae]rch(?:h)?\b", re.I), "search"),
+)
 REMINDER_LIST_RE = re.compile(r"\b(?:what are my reminders|list (?:my )?reminders|my reminders)\b", re.I)
 REMINDER_CANCEL_RE = re.compile(r"\b(?:cancel (?:my |all )?reminders|clear (?:my )?reminders)\b", re.I)
 
@@ -96,6 +121,15 @@ WEATHER_RE = re.compile(
 FORGET_RE = re.compile(r"^(?:forget|stop remembering|delete from memory)\b(?:\s+that)?\s+(?P<what>.+)$", re.I)
 ALIAS_RE = re.compile(r"^(?:remember|when i say|call)\s+(?P<name>.+?)\s+(?:means?|refer(?:s)? to|is)\s+(?P<target>.+)$", re.I)
 DASHBOARD_RE = re.compile(r"\b(?:open|show|launch)?\s*(?:the\s+)?dashboard\b|\bopen\s+jarvis\s+ui\b", re.I)
+DELETE_RE = re.compile(r"^(?:delete|remove|trash)\s+(?:the\s+)?(?:file\s+)?(?P<path>.+?)\s*$", re.I)
+
+
+def _repair_accent(text: str) -> str:
+    """Quietly normalise common accent/mic mishearings."""
+    out = text or ""
+    for pattern, repl in _ACCENT_REPAIRS:
+        out = pattern.sub(repl, out)
+    return out
 
 
 class Router:
@@ -119,10 +153,10 @@ class Router:
         if not raw:
             return False, ""
         clean = raw.rstrip(" .!?")
-
-        # Whisper sometimes hears "search" as "such" ("open chrome and such YouTube").
-        # Repair it only in the command slot after "and", so ordinary uses are untouched.
-        clean = re.sub(r"\band\s+such\b(?=\s+\S)", "and search", clean, flags=re.I)
+        repaired = _repair_accent(clean)
+        if repaired != clean:
+            clean = repaired
+            log.debug("router repaired: %r -> %r", raw, clean)
 
         # ---- calendar (before "open ...", which would treat phrases as app names) ----
         if SCHEDULE_TODAY_RE.search(clean):
@@ -185,7 +219,7 @@ class Router:
             return True, self._site_search(match.group("site"), match.group("query"))
         match = PLAY_RE.match(clean)
         if match:
-            query = match.group("query").strip()
+            query = re.sub(r"\s+on\s+youtub\w*$", "", match.group("query").strip(), flags=re.I)
             if query and len(query) > 1:
                 return True, self._site_search("youtube", query)
 
@@ -201,6 +235,24 @@ class Router:
                 missed: list[str] = []
                 for piece in pieces[:3]:
                     handled_piece, reply_piece = self.handle(piece)
+                    if not handled_piece:
+                        # "open chrome and notepad": a bare app/site name after "and".
+                        bare = piece.strip()
+                        if not QUESTION_RE.match(bare):
+                            if self._looks_like_site(bare):
+                                handled_piece, reply_piece = self.handle("open " + bare)
+                            else:
+                                compact = apps_skill.normalize(bare).replace(" ", "")
+                                try:
+                                    exact = next(
+                                        (name for name in self.apps.names()
+                                         if name.replace(" ", "") == compact),
+                                        None,
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    exact = None
+                                if exact:
+                                    handled_piece, reply_piece = self.handle("open " + exact)
                     if handled_piece:
                         replies.append(reply_piece)
                     else:
@@ -224,6 +276,12 @@ class Router:
             if self._looks_like_site(target):
                 return True, self.apps.open_site(target)[1]
             ok, reply = self.apps.launch_app(target)
+            if ok:
+                return True, reply
+            # Try to guess despite accent/mishearing
+            g_ok, g_reply = self._guess_intent(target)
+            if g_ok:
+                return True, g_reply
             return True, reply
 
         if BRIEFING_RE.match(clean):
@@ -255,11 +313,27 @@ class Router:
 
         match = GOTO_RE.match(clean)
         if match:
-            return True, self.apps.open_site(match.group("target").strip())[1]
+            target = match.group("target").strip()
+            if apps_skill.normalize(target) in apps_skill.SITE_ALIASES:
+                return True, self.apps.open_site(target)[1]
+            guessed = self._guess_site(target)
+            if guessed:
+                spoken, _url = guessed
+                self.apps.open_site(spoken)
+                return True, f"I took that as opening {spoken}, sir."
+            return True, self.apps.open_site(target)[1]
 
         match = SEARCH_RE.match(clean)
         if match:
-            return True, self.apps.open_site(match.group("q").strip())[1]
+            target = match.group("q").strip()
+            if apps_skill.normalize(target) in apps_skill.SITE_ALIASES:
+                return True, self.apps.open_site(target)[1]
+            guessed = self._guess_site(target)
+            if guessed:
+                spoken, _url = guessed
+                self.apps.open_site(spoken)
+                return True, f"I took that as opening {spoken}, sir."
+            return True, self.apps.open_site(target)[1]
 
         if UNDO_RE.match(clean):
             from .undo import pop_undo
@@ -375,3 +449,57 @@ class Router:
             return f"Playing {query} on YouTube, sir."
         webbrowser.open(f"https://www.google.com/search?q={encoded}")
         return f"Searching for {query}, sir."
+
+    def _guess_intent(self, target: str) -> tuple[bool, str]:
+        """Guess the intended app/site when the name was misheard.
+
+        Only called after the literal name failed, so a clear command is never
+        second-guessed. Says what it assumed, so a wrong guess is obvious.
+        """
+        q = apps_skill.normalize(target)
+        q = re.sub(r"\b(?:app|application|program)\b", "", q).strip()
+        if not q:
+            return False, ""
+        compact = q.replace(" ", "")
+
+        guessed = self._guess_site(compact)
+        if guessed:
+            spoken, _url = guessed
+            self.apps.open_site(spoken)
+            return True, f"I took that as opening {spoken}, sir."
+
+        # Otherwise compare against the real Start Menu names.
+        try:
+            pool = [name for name in self.apps.names() if name]
+        except Exception:  # noqa: BLE001
+            return False, ""
+        if not pool:
+            return False, ""
+
+        compact_pool = {name.replace(" ", ""): name for name in pool}
+        close = difflib.get_close_matches(compact, list(compact_pool), n=3, cutoff=0.6)
+        candidates = [compact_pool[match] for match in close]
+        if not candidates:
+            candidates = difflib.get_close_matches(q, pool, n=1, cutoff=0.55)
+        for name in candidates:
+            ok, _reply = self.apps.launch_app(name)
+            if ok:
+                spoken = "Chrome" if "chrome" in name else name.title()
+                return True, f"I took that as opening {spoken}, sir."
+        return False, ""
+
+    @staticmethod
+    def _guess_site(target: str) -> tuple[str, str] | None:
+        """Return (spoken name, url) when `target` is a near-miss for a known site."""
+        compact = apps_skill.normalize(target).replace(" ", "")
+        if not compact:
+            return None
+        sites = {name.replace(" ", ""): url for name, url in apps_skill.SITE_ALIASES.items()}
+        match = next((name for name in sites if name == compact), None)
+        if match is None:
+            close = difflib.get_close_matches(compact, list(sites), n=1, cutoff=0.75)
+            match = close[0] if close else None
+        if match is None:
+            return None
+        spoken = "WhatsApp Web" if match == "whatsappweb" else match.title()
+        return spoken, sites[match]
