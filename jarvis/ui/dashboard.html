@@ -408,9 +408,10 @@
       return;
     }
     connect.style.display = showConnect ? "flex" : "none";
-    count.textContent = String(messages.length);
+    const total = (email.total === undefined || email.total === null) ? messages.length : email.total;
+    count.textContent = String(total);
     count.className = "count";
-    if (email.unread) { count.textContent = messages.length + " · " + email.unread + " unread"; count.className = "count ok"; }
+    if (email.unread) { count.textContent = total + " · " + email.unread + " unread"; count.className = "count ok"; }
     if (email.error && !messages.length) {
       connect.style.display = "flex";
       if (email.address && !$("gmail-address").value) $("gmail-address").value = email.address;

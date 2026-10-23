@@ -29,6 +29,7 @@ _TIMEOUT_S = 20
 _lock = threading.Lock()
 _cache: dict[str, Any] = {"at": 0.0, "data": None}
 _CACHE_TTL_S = 30.0
+_counts_cache: dict[str, Any] = {"at": 0.0, "total": 0, "unread": 0}
 
 # The last list we handed out, so "reply to that email" knows which message it means.
 _last_messages: list[dict[str, Any]] = []
@@ -184,6 +185,35 @@ def unread_count() -> int:
     except Exception as exc:  # noqa: BLE001
         log.debug("unread count failed: %s", exc)
         return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def today_counts(force: bool = False) -> tuple[int, int]:
+    """How many arrived today and how many of those are unread (search only, fast)."""
+    if not configured():
+        return 0, 0
+    now = time.time()
+    if not force and now - float(_counts_cache.get("at") or 0) < _CACHE_TTL_S:
+        return int(_counts_cache["total"]), int(_counts_cache["unread"])
+    conn = None
+    try:
+        conn = _connect()
+        conn.select("INBOX", readonly=True)
+        since = "SINCE " + time.strftime("%d-%b-%Y", time.localtime())
+        _typ, data = conn.uid("search", None, since)
+        total = len(data[0].split()) if data and data[0] else 0
+        _typ, data = conn.uid("search", None, since + " UNSEEN")
+        unread = len(data[0].split()) if data and data[0] else 0
+        _counts_cache.update({"at": now, "total": total, "unread": unread})
+        return total, unread
+    except Exception as exc:  # noqa: BLE001
+        log.debug("today counts failed: %s", exc)
+        return 0, 0
     finally:
         if conn is not None:
             try:
@@ -368,10 +398,13 @@ def summary_speech(limit: int = 5) -> str:
         return ("Email isn't set up yet, sir. Put GMAIL_ADDRESS and GMAIL_APP_PASSWORD "
                 "in the .env file and I'll read your inbox.")
     mails = messages(limit=limit, today=True)
-    unread = sum(1 for mail in mails if mail.get("unread"))
-    if not mails:
+    total, unread = today_counts()
+    if not total:
+        total = len(mails)
+        unread = sum(1 for mail in mails if mail.get("unread"))
+    if not total and not mails:
         return "No email has arrived today, sir."
-    count = len(mails)
+    count = total
     parts = [f"You have {count} email{'s' if count != 1 else ''} today, sir"]
     if unread:
         parts.append(f"{unread} unread")
@@ -391,13 +424,18 @@ def summary_state(limit: int = 8) -> dict[str, Any]:
     """Everything the dashboard needs in one call (cached)."""
     if not configured():
         return {"configured": False, "address": _address(),
-                "messages": [], "unread": 0, "error": ""}
+                "messages": [], "total": 0, "unread": 0, "error": ""}
     mails = messages(limit=limit, today=True)
+    total, unread = today_counts()
+    if not total:
+        total = len(mails)
+        unread = sum(1 for mail in mails if mail.get("unread"))
     return {
         "configured": True,
         "address": _address(),
         "messages": mails,
-        "unread": sum(1 for mail in mails if mail.get("unread")),
+        "total": total,
+        "unread": unread,
         "error": (f"Could not reach Gmail: {_last_error}" if _last_error else ""),
     }
 
