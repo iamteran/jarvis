@@ -13,13 +13,50 @@ import time
 
 import numpy as np
 
-from .fish import FishTTS, TTSError
+try:
+    from .fish import FishTTS, TTSError
+except Exception:  # pragma: no cover - fallback when optional TTS packages are unavailable
+    FishTTS = None  # type: ignore[assignment]
+    TTSError = Exception
+
 from .player import Player
 
 log = logging.getLogger("tts.speaker")
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|(?<=[;:])\s+")
 _ABBREV = {"mr.", "mrs.", "ms.", "dr.", "st.", "e.g.", "i.e.", "vs.", "etc.", "a.m.", "p.m."}
+
+# Emoji and special characters that TTS engines mispronounce or read as literal text.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002702-\U000027B0"
+    "\U000024C2-\U0001F251"
+    "]+", flags=re.UNICODE,
+)
+_SYMBOL_MAP = [
+    (re.compile(r"\*+"), ""),           # asterisks (bold/italic markdown)
+    (re.compile(r"#+\s*"), ""),         # markdown headings
+    (re.compile(r"```[^`]*```", re.S), ""),  # code blocks
+    (re.compile(r"`[^`]*`"), ""),       # inline code
+    (re.compile(r"\b(\d+)%"), r"\1 percent"),
+    (re.compile(r"\$([\d,.]+)"), r"\1 dollars"),
+    (re.compile(r"&"), " and "),
+    (re.compile(r"@"), " at "),
+    (re.compile(r"[\u2022\u2023\u25E6\u2043\u2219]"), ""),  # bullet points
+    (re.compile(r"\s{2,}"), " "),       # collapse whitespace
+]
+
+
+def clean_for_speech(text: str) -> str:
+    """Strip content that TTS engines cannot pronounce gracefully."""
+    text = _EMOJI_RE.sub("", text or "")
+    for pattern, replacement in _SYMBOL_MAP:
+        text = pattern.sub(replacement, text)
+    return text.strip()
 
 
 def split_sentences(text: str, max_len: int = 240) -> list[str]:
@@ -56,7 +93,11 @@ def split_sentences(text: str, max_len: int = 240) -> list[str]:
 
 class Speaker:
     def __init__(self, tts: FishTTS | None = None, player: Player | None = None) -> None:
-        self.tts = tts or FishTTS()
+        if tts is None:
+            if FishTTS is None:
+                raise RuntimeError("FishTTS is unavailable; install the required TTS dependencies.")
+            tts = FishTTS()
+        self.tts = tts
         self.player = player or Player()
         self._stop = threading.Event()
 
@@ -75,6 +116,7 @@ class Speaker:
         dead producer thread must never leave the assistant frozen in "speaking" with no
         audio — which is exactly what happened once and looked like "Jarvis is silent".
         """
+        text = clean_for_speech(text)
         sentences = split_sentences(text)
         if not sentences:
             return True

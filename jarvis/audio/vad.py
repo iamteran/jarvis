@@ -42,11 +42,18 @@ class EnergyVAD:
         self.last_rms = 0.0
         self._calibrated_frames = 0
 
-    def is_speech(self, block: np.ndarray) -> bool:
+    def is_speech(self, block: np.ndarray, ongoing: bool = False) -> bool:
+        """Is this block speech?
+
+        `ongoing=False` is the *onset* test: strong enough to start an utterance.
+        `ongoing=True` is the *continuation* test: a lower bar, so a person who
+        trails off softly is not cut off mid-sentence. This two-threshold
+        (hysteresis) split is what keeps room noise from holding a recording open.
+        """
         level = rms(block)
         self.last_rms = level
         # learn the noise floor from quiet blocks only; track down quickly, up slowly
-        if level < self.noise * 2.0:
+        if level < self.noise * 1.8:
             self.noise = 0.90 * self.noise + 0.10 * level
         elif level < self.noise:
             self.noise = 0.97 * self.noise + 0.03 * level
@@ -55,7 +62,16 @@ class EnergyVAD:
         # then the assistant goes deaf exactly when it needs to hear the user.
         self.noise = min(self.noise, self.noise_ceiling)
         self._calibrated_frames += 1
+
+        if ongoing:
+            hold = max(self.threshold * 0.6, self.noise * 1.12)
+            return level > hold
         return level > max(self.threshold, self.noise * self.noise_mult)
+
+    @property
+    def silence_level(self) -> float:
+        """Level below which a started utterance counts as finished."""
+        return max(self.threshold * 0.6, self.noise * 1.12)
 
 
 class Recorder:
@@ -88,7 +104,7 @@ class Recorder:
         level = rms(block)
         self.peak = max(self.peak, level)
 
-        if self.vad.is_speech(block):
+        if self.vad.is_speech(block, ongoing=self.started):
             self.started = True
             self.speech_ms += self.block_ms
             self.silence_ms = 0

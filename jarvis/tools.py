@@ -65,8 +65,11 @@ def _int(desc: str, required: bool = False, minimum: int | None = None,
 
 
 class Tools:
-    def __init__(self) -> None:
+    def __init__(self, reminder_service=None) -> None:  # noqa: ANN001
         self._tools: dict[str, Tool] = {}
+        # Optional reference to the live ReminderService so tool calls hit the same
+        # SQLite DB instance as the background polling thread.
+        self._reminder_service = reminder_service
         self._register_all()
 
     # ------------------------------------------------------------------ plumbing
@@ -306,6 +309,27 @@ class Tools:
             _obj(minutes=_int("Delay in minutes before shutting down", False, 0, 120)),
             self._shutdown_pc,
         ))
+        self.add(Tool(
+            "get_weather",
+            "Get the current weather at a given city, or the user's local weather if no city "
+            "is provided. Returns a short spoken summary.",
+            _obj(city=_str("City name, e.g. Nairobi. Leave blank for local weather.")),
+            self._get_weather,
+        ))
+        self.add(Tool(
+            "forget_memory",
+            "Delete a fact from persistent memory that the user no longer wants remembered.",
+            _obj(query=_str("The fact or topic to forget, e.g. 'cilantro preference'", True)),
+            self._forget_memory,
+        ))
+        self.add(Tool(
+            "set_alias",
+            "Teach Jarvis a spoken shortcut for a path or concept, e.g. "
+            "'my music folder' -> 'D:/Music'. The alias persists across sessions.",
+            _obj(name=_str("The spoken shortcut the user will use, e.g. 'my cv folder'", True),
+                 target=_str("What it actually refers to, e.g. an absolute path", True)),
+            self._set_alias,
+        ))
 
     # ------------------------------------------------------------------ handlers
     def _open_app(self, app: str) -> str:
@@ -472,20 +496,32 @@ class Tools:
 
     # ----------------------------------------------------------------- reminders
     def _set_reminder(self, text: str, minutes: int) -> str:
-        from .reminders import Reminders
-
-        return Reminders().add(text, float(minutes))
+        # Use the live service's Reminders object when available, so this
+        # reminder is seen by the same background polling thread that fires them.
+        reminders = (
+            self._reminder_service.reminders
+            if self._reminder_service is not None
+            else __import__("jarvis.reminders", fromlist=["Reminders"]).Reminders()
+        )
+        return reminders.add(text, float(minutes))
 
     def _list_reminders(self) -> str:
-        from .reminders import Reminders
-
-        return Reminders().list_speech()
+        reminders = (
+            self._reminder_service.reminders
+            if self._reminder_service is not None
+            else __import__("jarvis.reminders", fromlist=["Reminders"]).Reminders()
+        )
+        return reminders.list_speech()
 
     def _cancel_reminders(self) -> str:
-        from .reminders import Reminders
-
-        count = Reminders().cancel_all()
-        return f"Cancelled {count} reminder{'s' if count != 1 else ''}, sir." if count else "There were none pending, sir."
+        reminders = (
+            self._reminder_service.reminders
+            if self._reminder_service is not None
+            else __import__("jarvis.reminders", fromlist=["Reminders"]).Reminders()
+        )
+        count = reminders.cancel_all()
+        return (f"Cancelled {count} reminder{'s' if count != 1 else ''}, sir."
+                if count else "There were none pending, sir.")
 
     def _set_reminder_at(self, text: str, when: str) -> str:
         from .nlp_time import parse_when
@@ -557,6 +593,39 @@ class Tools:
 
         detail = "The computer will shut down immediately." if not minutes else f"It will shut down in {minutes} minutes."
         return request("shut the computer down", detail, _shutdown)
+
+    # ------------------------------------------------------------------- weather
+    def _get_weather(self, city: str = "") -> str:
+        import urllib.request as _req
+
+        location = (city or "").strip() or ""
+        slug = location.replace(" ", "+") if location else ""
+        url = f"https://wttr.in/{slug}?format=3"
+        try:
+            with _req.urlopen(url, timeout=4) as resp:  # noqa: S310
+                raw = resp.read().decode("utf-8", errors="ignore").strip()
+            if raw and len(raw) < 200:
+                return raw + "."
+            return "I couldn't get a weather summary just now, sir."
+        except Exception as exc:  # noqa: BLE001
+            log.warning("weather tool failed: %s", exc)
+            return "My weather source is unreachable at the moment, sir."
+
+    # ------------------------------------------------------------------- memory extras
+    def _forget_memory(self, query: str) -> str:
+        from .memory import Memory
+
+        count = Memory().forget(query)
+        if count == 0:
+            return f"I couldn't find anything matching {query!r} to forget, sir."
+        return f"Done. I've forgotten {count} fact{'s' if count != 1 else ''} about that, sir."
+
+    def _set_alias(self, name: str, target: str) -> str:
+        from .memory import Memory
+
+        Memory().set_alias(name.strip(), target.strip())
+        return f"Noted, sir. When you say \"{name}\", I'll understand you mean {target}."
+
 
 
 def _short(arguments: dict) -> str:

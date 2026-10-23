@@ -5,7 +5,11 @@ import logging
 import threading
 
 import numpy as np
-import sounddevice as sd
+
+try:
+    import sounddevice as sd
+except Exception:  # pragma: no cover - handled gracefully at runtime
+    sd = None
 
 from ..audio.capture import resolve_device
 from ..config import CONFIG
@@ -30,6 +34,8 @@ class Player:
         `on_chunk` is called with each block as it is written, so the echo guard knows
         exactly what came out of the speakers and when.
         """
+        if sd is None:
+            return True
         if samples is None or len(samples) == 0:
             return True
         self._stop.clear()
@@ -60,6 +66,8 @@ class Player:
 
     def blip(self, freq: float = 880.0, ms: int = 70, volume: float = 0.05) -> None:
         """Tiny confirmation tone — how the user knows Jarvis is listening."""
+        if sd is None:
+            return
         try:
             rate = self.rate
             n = int(rate * ms / 1000)

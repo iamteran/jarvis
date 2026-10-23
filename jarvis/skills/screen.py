@@ -36,6 +36,13 @@ def available() -> bool:
         return False
 
 
+def _safe_descendants(window):
+    try:
+        return list(window.descendants())
+    except Exception:  # noqa: BLE001
+        return []
+
+
 # ------------------------------------------------------------------------ windows
 def list_windows() -> list[str]:
     """Titles of visible top-level windows.
@@ -150,18 +157,15 @@ def read_window(hint: str = "", max_items: int = MAX_TEXT_ITEMS) -> str:
     if window is None:
         return f"I can't see a window called {hint}, sir." if hint else "I can't tell which window is in front, sir."
     texts: list[str] = []
-    try:
-        for control in window.descendants():
-            try:
-                text = (control.window_text() or "").strip()
-            except Exception:  # noqa: BLE001
-                continue
-            if 1 < len(text) <= 90 and text not in texts:
-                texts.append(text)
-            if len(texts) >= max_items:
-                break
-    except Exception as exc:  # noqa: BLE001
-        log.debug("descendant walk failed: %s", exc)
+    for control in _safe_descendants(window):
+        try:
+            text = (control.window_text() or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if 1 < len(text) <= 90 and text not in texts:
+            texts.append(text)
+        if len(texts) >= max_items:
+            break
     if not texts:
         return f"{window.window_text()} doesn't expose readable text to me, sir."
     joined = "; ".join(texts[:max_items])

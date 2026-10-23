@@ -61,6 +61,9 @@ class WhisperEars:
         self._model = None
         self._fast_model = None
         self._lock = threading.Lock()
+        # Transcription is serialised: two turns used to run the same CTranslate2 model at
+        # once on two cores, which is what produced the 72 s and 177 s outliers in the log.
+        self._transcribe_lock = threading.Lock()
         self.last_duration_ms = 0.0
         self.ready = False
 
@@ -127,17 +130,18 @@ class WhisperEars:
                 np.linspace(0.0, 1.0, samples.size, endpoint=False),
                 samples,
             ).astype(np.float32)
-        started = time.perf_counter()
-        segments, info = model.transcribe(
-            samples,
-            language="en" if self.model_size.endswith(".en") else None,
-            beam_size=1 if fast else CONFIG.whisper_beam,
-            vad_filter=False,
-            condition_on_previous_text=False,
-            initial_prompt=None if fast else CONFIG.whisper_prompt,
-        )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
-        self.last_duration_ms = (time.perf_counter() - started) * 1000
+        with self._transcribe_lock:
+            started = time.perf_counter()
+            segments, info = model.transcribe(
+                samples,
+                language="en" if self.model_size.endswith(".en") else None,
+                beam_size=1 if fast else CONFIG.whisper_beam,
+                vad_filter=False,
+                condition_on_previous_text=False,
+                initial_prompt=None if fast else CONFIG.whisper_prompt,
+            )
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+            self.last_duration_ms = (time.perf_counter() - started) * 1000
         log.debug("whisper: %.2fs audio -> %.0f ms: %r",
                   samples.size / 16000, self.last_duration_ms, text[:80])
         return text

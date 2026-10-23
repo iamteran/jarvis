@@ -64,7 +64,11 @@ def pop_undo() -> str | None:
         return f"I couldn't undo {entry.label}, I'm afraid."
     rest = len(_stack)
     tail = f" {rest} more step{'s' if rest != 1 else ''} available." if rest else ""
-    return f"Undone: {entry.label}.{tail}".replace("..", ".")
+    # Report what actually happened ("Back to 100 percent"), not just the label.
+    message = (result or f"Undone: {entry.label}.").strip()
+    if not message.endswith("."):
+        message += "."
+    return f"{message}{tail}"
 
 
 def pending() -> list[str]:

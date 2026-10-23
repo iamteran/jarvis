@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Iterator
 
-from ..ai import DeepSeek, Gemini, Groq
+from ..ai import DeepSeek, Gemini, Groq, extract_text, function_calls
 from ..config import CONFIG
 from ..memory import Memory
 from ..tools import Tools
@@ -49,6 +50,10 @@ class Brain:
         self.messages: list[dict] = []
         self.last_reply = ""
         self.last_model = self.chain[0][1] if self.chain else ""
+        # Per-model circuit breaker: after two consecutive failures a model is skipped
+        # for a minute, so one dead endpoint cannot tax every turn.
+        self._fail_streak: dict[str, int] = {}
+        self._cooldown_until: dict[str, float] = {}
 
     # ------------------------------------------------------------------ history
     def reset(self) -> None:
@@ -90,11 +95,7 @@ class Brain:
         actions: list[str] = []
         reply = ""
         try:
-            providers = self._tool_providers()
-            if providers:
-                reply = self._tool_turn(providers, actions)
-            else:
-                reply = "".join(self._gemini_stream())
+            reply = self._answer(actions)
         except Exception as exc:  # noqa: BLE001 - report, never crash the turn
             log.error("brain failed: %s", exc)
             raise
@@ -109,16 +110,31 @@ class Brain:
                     log.debug("memory log failed", exc_info=True)
         return reply.strip(), actions
 
-    def _tool_turn(self, providers, actions: list[str]) -> str:  # noqa: ANN001
+    def _answer(self, actions: list[str]) -> str:
+        """Answer with the best available brain.
+
+        Tool-capable OpenAI-style providers are tried first; Gemini now follows with its
+        native function calling instead of being a text-only last resort. That distinction
+        matters: with DeepSeek unfunded and no Groq key, Gemini is the only brain here, and
+        routing it around the toolbelt is why Jarvis described actions it never took.
+        """
         last_error: Exception | None = None
-        for provider, client, model in providers:
+        for provider, client, model in self._tool_providers():
+            if self._cooling(model):
+                continue
             try:
                 self.last_model = model
-                return self._tool_loop(client, model, actions)
+                reply = self._tool_loop(client, model, actions)
+                self._note_success(model)
+                return reply
             except Exception as exc:  # noqa: BLE001 - try the next provider
                 last_error = exc
+                self._note_failure(model)
                 log.warning("%s/%s tool turn failed (%s); trying next", provider, model, exc)
-        raise last_error or RuntimeError("no tool-capable provider")
+        try:
+            return self._gemini_tool_loop(actions)
+        except Exception as exc:  # noqa: BLE001
+            raise last_error or exc
 
     def _tool_loop(self, client, model: str, actions: list[str]) -> str:  # noqa: ANN001
         messages: list[dict] = [{"role": "system", "content": self._system()}]
@@ -126,7 +142,7 @@ class Brain:
         schemas = self.tools.schemas()
         for round_index in range(MAX_TOOL_ROUNDS):
             data = client.chat(messages, tools=schemas, temperature=0.6,
-                               max_output_tokens=500, timeout=90)
+                               max_output_tokens=500, timeout=CONFIG.llm_timeout)
             choices = data.get("choices") or []
             if not choices:
                 return "I didn't get an answer from my language model, sir."
@@ -135,7 +151,8 @@ class Brain:
             if not calls:
                 return (message.get("content") or "").strip()
 
-            log.info("model requested %d tool call(s)", len(calls))
+            log.info("tool round %d/%d: model requested %d call(s)",
+                     round_index + 1, MAX_TOOL_ROUNDS, len(calls))
             messages.append({
                 "role": "assistant",
                 "content": message.get("content") or "",
@@ -164,11 +181,124 @@ class Brain:
         except Exception:  # noqa: BLE001
             return "Done, sir."
 
-    # ------------------------------------------------------------ text-only fallback
-    def _gemini_stream(self) -> Iterator[str]:
+    # ------------------------------------------------------- gemini native tools
+    def _gemini_declarations(self) -> list[dict]:
+        """Translate the OpenAI-style tool schemas into Gemini function declarations."""
+        declarations: list[dict] = []
+        for schema in self.tools.schemas():
+            function = schema.get("function", schema)
+            declarations.append({
+                "name": function.get("name", ""),
+                "description": function.get("description", ""),
+                "parameters": function.get("parameters")
+                or {"type": "object", "properties": {}},
+            })
+        return declarations
+
+    def _gemini_contents(self) -> list[dict]:
+        """Conversation history in Gemini's shape, without OpenAI tool plumbing."""
         contents: list[dict] = []
         for message in self.messages:
             role = message.get("role")
+            if role == "tool":
+                continue
+            if role == "assistant" and message.get("tool_calls") and not message.get("content"):
+                continue
+            text = message.get("content")
+            if not text:
+                continue
+            contents.append({
+                "role": "model" if role == "assistant" else "user",
+                "parts": [{"text": text}],
+            })
+        return contents
+
+    def _gemini_tool_loop(self, actions: list[str]) -> str:
+        """The real turn for a Gemini brain: model -> tool -> model, until it can speak."""
+        contents = self._gemini_contents()
+        declarations = self._gemini_declarations()
+        models = [model for _provider, model in self._text_providers() if not self._cooling(model)]
+        if not models:   # everything is in cooldown: one attempt is better than silence
+            models = [model for _provider, model in self._text_providers()]
+        last_error: Exception | None = None
+        for model in models:
+            try:
+                self.last_model = model
+                for round_index in range(MAX_TOOL_ROUNDS):
+                    data = self.gemini.generate(
+                        model, contents, system=self._system(), tools=declarations,
+                        temperature=0.6, max_output_tokens=500, timeout=CONFIG.llm_timeout,
+                    )
+                    calls = function_calls(data)
+                    if not calls:
+                        self._note_success(model)
+                        return extract_text(data).strip()
+                    log.info("gemini tool round %d/%d: model requested %d call(s)",
+                             round_index + 1, MAX_TOOL_ROUNDS, len(calls))
+                    contents.append({
+                        "role": "model",
+                        "parts": [
+                            {"functionCall": {"name": call.get("name", ""),
+                                              "args": call.get("args") or {}}}
+                            for call in calls
+                        ],
+                    })
+                    responses = []
+                    for call in calls:
+                        name = call.get("name", "")
+                        arguments = call.get("args") or {}
+                        result = self.tools.execute(name, arguments)
+                        actions.append(f"{name}: {result}")
+                        responses.append({
+                            "functionResponse": {
+                                "name": name,
+                                "response": {"result": result},
+                            },
+                        })
+                    contents.append({"role": "user", "parts": responses})
+                # Ran out of rounds: ask for a one-line summary with no further tools.
+                data = self.gemini.generate(
+                    model, contents, system=self._system(), tools=None,
+                    temperature=0.4, max_output_tokens=160, timeout=CONFIG.llm_timeout,
+                )
+                self._note_success(model)
+                return extract_text(data).strip() or "Done, sir."
+            except Exception as exc:  # noqa: BLE001 - rate limit, DNS, SSL: next model
+                last_error = exc
+                self._note_failure(model)
+                log.warning("gemini/%s failed (%s); trying next", model, exc)
+        raise last_error or RuntimeError("no brain available")
+
+    # ---------------------------------------------------------------- circuit breaker
+    def _cooling(self, model: str) -> bool:
+        return time.monotonic() < self._cooldown_until.get(model, 0.0)
+
+    def _note_failure(self, model: str) -> None:
+        streak = self._fail_streak.get(model, 0) + 1
+        self._fail_streak[model] = streak
+        if streak >= 2:
+            self._cooldown_until[model] = time.monotonic() + CONFIG.llm_model_cooldown_s
+            self._fail_streak[model] = 0
+            log.warning("brain model %s cooling down for %.0f s",
+                        model, CONFIG.llm_model_cooldown_s)
+
+    def _note_success(self, model: str) -> None:
+        self._fail_streak.pop(model, None)
+        self._cooldown_until.pop(model, None)
+
+    # ------------------------------------------------------------ text-only fallback
+    def _gemini_stream(self) -> Iterator[str]:
+        # Only include clean user/assistant turns. Tool-call messages are in OpenAI
+        # format (role=tool, tool_calls=[...]) which Gemini's API cannot parse.
+        # Filtering them keeps the conversation readable when we fall back from Groq.
+        contents: list[dict] = []
+        for message in self.messages:
+            role = message.get("role")
+            # Skip tool result turns and assistant messages that only contain tool calls
+            if role == "tool":
+                continue
+            if role == "assistant" and message.get("tool_calls") and not message.get("content"):
+                continue
             text = message.get("content")
             if not text:
                 continue
@@ -179,14 +309,19 @@ class Brain:
         system = self._system()
         last_error: Exception | None = None
         for provider, model in self._text_providers():
+            if self._cooling(model):
+                continue
             try:
                 self.last_model = model
                 yield from self.gemini.stream_text(
-                    model, contents, system=system, temperature=0.75, max_output_tokens=400,
+                    model, contents, system=system, temperature=0.75,
+                    max_output_tokens=400, timeout=CONFIG.llm_timeout,
                 )
+                self._note_success(model)
                 return
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                self._note_failure(model)
                 log.warning("gemini/%s failed (%s); trying next", model, exc)
         if last_error is not None:
             raise last_error

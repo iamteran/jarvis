@@ -87,6 +87,13 @@ LOCK_RE = re.compile(r"\block\b.{0,20}\b(?:screen|computer|pc|laptop|workstation
 TIME_RE = re.compile(r"\b(?:what(?:'s| is)? the time|what time is it|time is it)\b", re.I)
 DATE_RE = re.compile(r"\b(?:what(?:'s| is)? (?:the )?(?:date|day)|what day is it|today'?s date)\b", re.I)
 MEDIA_RE = re.compile(r"\b(?:pause|resume|play)(?:\s+the)?\s*(?:music|song|video|playback)?\s*$", re.I)
+WEATHER_RE = re.compile(
+    r"\b(?:what(?:'s| is) the weather|weather(?: (?:in|for|at)\s+(?P<city>[\w\s]+?))?|how(?:'s| is) it outside|is it raining)\b",
+    re.I,
+)
+FORGET_RE = re.compile(r"^(?:forget|stop remembering|delete from memory)\b(?:\s+that)?\s+(?P<what>.+)$", re.I)
+ALIAS_RE = re.compile(r"^(?:remember|when i say|call)\s+(?P<name>.+?)\s+(?:means?|refer(?:s)? to|is)\s+(?P<target>.+)$", re.I)
+DASHBOARD_RE = re.compile(r"\b(?:open|show|launch)?\s*(?:the\s+)?dashboard\b|\bopen\s+jarvis\s+ui\b", re.I)
 
 
 class Router:
@@ -294,6 +301,38 @@ class Router:
             return True, system_skill.date_speech()
         if MEDIA_RE.match(clean):
             return True, system_skill.play_pause()
+
+        # --- weather ---
+        match = WEATHER_RE.search(clean)
+        if match:
+            city = (match.group("city") or "").strip()
+            from .tools import Tools
+            return True, Tools()._get_weather(city)
+
+        # --- memory: forget a fact ---
+        match = FORGET_RE.match(clean)
+        if match:
+            from .memory import Memory
+            count = Memory().forget(match.group("what").strip())
+            if count == 0:
+                return True, "I don't seem to have that recorded, sir."
+            return True, f"Forgotten, sir. Removed {count} fact{'s' if count != 1 else ''}."
+
+        # --- teach an alias ---
+        match = ALIAS_RE.match(clean)
+        if match:
+            from .memory import Memory
+            name = match.group("name").strip()
+            target = match.group("target").strip()
+            Memory().set_alias(name, target)
+            return True, f'Understood, sir. "{name}" will mean {target} from now on.'
+
+        # --- dashboard ---
+        if DASHBOARD_RE.search(clean):
+            import pathlib, webbrowser
+            dash = pathlib.Path(__file__).resolve().parent / "ui" / "dashboard.html"
+            webbrowser.open(dash.as_uri())
+            return True, "Opening the command interface in your browser, sir."
 
         return False, ""
 

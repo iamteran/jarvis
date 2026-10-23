@@ -23,6 +23,11 @@ log = logging.getLogger("gemini")
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 RETRYABLE = {429, 500, 502, 503, 504}
+# Fail fast on a bad link. The old 3-attempt/1.2 s+2.4 s ladder, multiplied by three
+# models, produced 40-60 s turns that ended in an apology. One quick retry is enough for
+# a transient reset; anything worse is the next model's problem.
+MAX_ATTEMPTS = 2
+RETRY_DELAY = 0.6
 
 
 class GeminiError(RuntimeError):
@@ -75,11 +80,23 @@ def extract_text(data: dict[str, Any]) -> str:
 
 
 def first_function_call(data: dict[str, Any]) -> dict[str, Any] | None:
+    calls = function_calls(data)
+    return calls[0] if calls else None
+
+
+def function_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every `functionCall` part in a Gemini response.
+
+    A single response may contain several calls (e.g. "open Chrome and check the
+    calendar"), and older code kept only the first, silently dropping the rest.
+    """
+    calls: list[dict[str, Any]] = []
     for cand in data.get("candidates", []) or []:
         for part in cand.get("content", {}).get("parts", []) or []:
-            if "functionCall" in part:
-                return part["functionCall"]
-    return None
+            call = part.get("functionCall")
+            if isinstance(call, dict):
+                calls.append(call)
+    return calls
 
 
 class DeepSeek:
@@ -281,11 +298,11 @@ class Gemini:
     # ---------------------------------------------------------------------- text
     def generate(self, model: str, contents: list[dict], *, system: str | None = None,
                  tools: list[dict] | None = None, temperature: float = 0.6,
-                 max_output_tokens: int = 1024, timeout: float = 90.0) -> dict:
+                 max_output_tokens: int = 1024, timeout: float = 60.0) -> dict:
         payload = self._payload(contents, system, tools, temperature, max_output_tokens)
-        delay = 1.2
+        delay = RETRY_DELAY
         last: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(MAX_ATTEMPTS):
             try:
                 response = self.http.post(
                     f"{BASE}/models/{model}:generateContent", json=payload, timeout=timeout
@@ -294,11 +311,11 @@ class Gemini:
                 return response.json()
             except GeminiError as exc:
                 last = exc
-                if exc.status not in RETRYABLE or attempt == 2:
+                if exc.status not in RETRYABLE or attempt == MAX_ATTEMPTS - 1:
                     raise
             except requests.RequestException as exc:
                 last = exc
-                if attempt == 2:
+                if attempt == MAX_ATTEMPTS - 1:
                     raise
             log.warning("Gemini call failed (%s), retrying in %.1fs", last, delay)
             time.sleep(delay)
@@ -307,11 +324,11 @@ class Gemini:
 
     def stream_text(self, model: str, contents: list[dict], *, system: str | None = None,
                     tools: list[dict] | None = None, temperature: float = 0.7,
-                    max_output_tokens: int = 1024, timeout: float = 120.0) -> Iterator[str]:
+                    max_output_tokens: int = 1024, timeout: float = 30.0) -> Iterator[str]:
         """Yield text deltas as Gemini produces them."""
         payload = self._payload(contents, system, tools, temperature, max_output_tokens)
-        delay = 1.2
-        for attempt in range(3):
+        delay = RETRY_DELAY
+        for attempt in range(MAX_ATTEMPTS):
             try:
                 with self.http.post(
                     f"{BASE}/models/{model}:streamGenerateContent?alt=sse",
@@ -337,7 +354,7 @@ class Gemini:
                 return
             except (GeminiError, requests.RequestException) as exc:
                 status = getattr(exc, "status", None)
-                if attempt == 2 or (status is not None and status not in RETRYABLE):
+                if attempt == MAX_ATTEMPTS - 1 or (status is not None and status not in RETRYABLE):
                     raise
                 log.warning("stream failed (%s), retrying in %.1fs", exc, delay)
                 time.sleep(delay)
@@ -373,7 +390,7 @@ class Gemini:
         for candidate in models:
             try:
                 data = self.generate(candidate, contents, temperature=0.0,
-                                     max_output_tokens=512, timeout=90)
+                                     max_output_tokens=512, timeout=30)
                 text = extract_text(data).strip()
                 if text:
                     log.debug("transcribed with %s", candidate)

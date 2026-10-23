@@ -80,6 +80,15 @@ class EchoGuard:
         return self._floor
 
     @property
+    def last_similarity(self) -> float:
+        """How much of the last mic block looked like our own playback (1.0 = pure echo).
+
+        Read by the barge-in log line in `app.py`. Kept as a property so the guard's
+        internals stay private and a rename can never crash the audio thread again.
+        """
+        return self._last_sim
+
+    @property
     def reliable(self) -> bool:
         return self._floor < _UNRELIABLE_FLOOR
 

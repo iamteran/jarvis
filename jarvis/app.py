@@ -121,7 +121,7 @@ class Jarvis:
         from .ui.tray import Tray
         self.tray = Tray(on_listen=self.trigger_listen, on_mute=self.toggle_mute,
                          on_quit=lambda: self.shutdown("tray menu"),
-                         on_show=self.show_orb)
+                         on_show=self.reveal_orb)
         self.tray.start()
         self._start_hotkeys()
         self._set_state(State.BOOTING)
@@ -151,6 +151,9 @@ class Jarvis:
             log.info("Jarvis online — say 'Hey Jarvis' or press Ctrl+Space")
             self.reminders = ReminderService(self._announce)
             self.reminders.start()
+            # Wire the live reminder service into the tool layer so that LLM-triggered
+            # reminders are seen by the same background polling thread that fires them.
+            self.brain.tools._reminder_service = self.reminders
             self._watchdog = threading.Thread(target=self._watchdog_loop, name="watchdog",
                                               daemon=True)
             self._watchdog.start()
@@ -348,7 +351,8 @@ class Jarvis:
         self._followup_deadline = 0.0
         self._set_state(State.MUTED if self.muted else State.IDLE)
 
-    def show_orb(self) -> None:
+    def reveal_orb(self) -> None:
+        """Make the orb visible again after it has been hidden."""
         if self.orb is not None:
             self.orb.show()
 
@@ -376,6 +380,8 @@ class Jarvis:
         # While speaking, our own voice is in the room. The echo guard decides whether a
         # block is us or the user talking over us — the wake word cannot (it is our voice).
         if state is State.SPEAKING:
+            if not CONFIG.barge_in:
+                return
             if self.echo.is_user_speech(samples, CONFIG.sample_rate, level):
                 self._barge_hits += 1
                 if self._barge_hits >= self.echo.required_blocks:
@@ -579,12 +585,12 @@ class Jarvis:
                 self._wake_cooldown_until = time.monotonic() + 5.0
                 self._set_state(State.IDLE)
                 return
-            log.debug("idle speech heard: %r", text)
+            log.info("idle speech heard: %r", text)
             match = WAKE_NAME_RE.match(text)
             if not match:
-                # Not addressed to me. Leave the microphone alone for a while so a
-                # conversation in the room does not become a stream of transcriptions.
-                self._wake_cooldown_until = time.monotonic() + 20.0
+                # Not addressed to me — but log what was heard to aid tuning.
+                log.info("wake-stt: no name match in %r — cooldown 5 s", text)
+                self._wake_cooldown_until = time.monotonic() + 5.0
                 self._set_state(State.IDLE)
                 return
             command = (match.group("command") or "").strip(" ,.!?;:")

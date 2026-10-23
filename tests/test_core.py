@@ -240,14 +240,33 @@ class TestToolbelt(unittest.TestCase):
     def test_tools_registered(self) -> None:
         tools = Tools()
         names = tools.names()
-        self.assertGreaterEqual(len(names), 30)
+        self.assertGreaterEqual(len(names), 33, f"got {len(names)}: {names}")
         for required in ("open_app", "look_at_screen", "add_appointment", "check_schedule",
-                         "delete_file", "shutdown_pc", "read_file"):
+                         "delete_file", "shutdown_pc", "read_file",
+                         "get_weather", "forget_memory", "set_alias"):
             self.assertIn(required, names)
 
     def test_unknown_tool_is_survivable(self) -> None:
         result = Tools().execute("no_such_tool", {})
         self.assertIn("Unknown tool", result)
+
+
+class TestSpeakerCleaning(unittest.TestCase):
+    def test_emoji_stripped(self) -> None:
+        from jarvis.tts.speaker import clean_for_speech
+        self.assertEqual(clean_for_speech("Hello! 😊"), "Hello!")
+
+    def test_percent_expanded(self) -> None:
+        from jarvis.tts.speaker import clean_for_speech
+        result = clean_for_speech("Volume is 75%")
+        self.assertIn("percent", result)
+        self.assertNotIn("%", result)
+
+    def test_markdown_stripped(self) -> None:
+        from jarvis.tts.speaker import clean_for_speech
+        result = clean_for_speech("**Bold** and *italic* and # Heading")
+        self.assertNotIn("*", result)
+        self.assertNotIn("#", result)
 
 
 if __name__ == "__main__":

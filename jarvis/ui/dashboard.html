@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JARVIS // SYSTEM PRIME</title>
+  <meta name="description" content="Jarvis AI Assistant - Holographic Command Interface"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=JetBrains+Mono:wght@300;400;500&family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"}}
+  </script>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --cyan:#00d4ff;--cyan2:#00f3ff;--gold:#e8a800;--green:#00ff88;
+      --red:#ff4444;--bg:#000508;--panel:rgba(0,10,18,0.75);
+      --border:rgba(0,212,255,0.18);--border-hi:rgba(0,212,255,0.45);
+      --glow:0 0 20px rgba(0,212,255,0.35),0 0 60px rgba(0,212,255,0.15);
+      --glow-s:0 0 8px rgba(0,212,255,0.5);
+      --font-hud:'Orbitron',monospace;--font-mono:'JetBrains Mono',monospace;
+    }
+    html,body{width:100%;height:100%;overflow:hidden;background:var(--bg)}
+    body{font-family:var(--font-mono);color:var(--cyan);position:relative}
+
+    /* ─── GRID BG ─── */
+    #grid-bg{
+      position:fixed;inset:0;pointer-events:none;z-index:0;
+      background-image:
+        linear-gradient(rgba(0,212,255,.04)1px,transparent 1px),
+        linear-gradient(90deg,rgba(0,212,255,.04)1px,transparent 1px);
+      background-size:48px 48px;
+      animation:grid-shift 25s linear infinite;
+    }
+    @keyframes grid-shift{0%{background-position:0 0}100%{background-position:48px 48px}}
+    #radial-bg{
+      position:fixed;inset:0;pointer-events:none;z-index:0;
+      background:radial-gradient(ellipse 70% 70% at 50% 50%,rgba(0,212,255,.06),transparent 70%);
+    }
+    #scanlines{
+      position:fixed;inset:0;pointer-events:none;z-index:1;
+      background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.07) 2px,rgba(0,0,0,.07) 4px);
+    }
+
+    /* ─── THREE.JS CANVAS ─── */
+    #three-canvas{
+      position:fixed;inset:0;z-index:2;
+      display:flex;align-items:center;justify-content:center;
+      pointer-events:none;
+    }
+    #three-canvas canvas{pointer-events:auto}
+
+    /* ─── HEADER ─── */
+    header{
+      position:fixed;top:0;left:0;right:0;z-index:20;
+      display:flex;align-items:center;justify-content:space-between;
+      padding:.9rem 2rem;
+      background:rgba(0,5,12,.65);
+      border-bottom:1px solid var(--border);
+      backdrop-filter:blur(16px);
+    }
+    .h-brand{display:flex;align-items:center;gap:1rem}
+    .h-logo{
+      width:42px;height:42px;border-radius:50%;
+      border:2px solid var(--cyan);
+      box-shadow:var(--glow-s);
+      display:flex;align-items:center;justify-content:center;
+      font-family:var(--font-hud);font-size:1rem;color:var(--cyan);
+      animation:logo-pulse 3s ease-in-out infinite;
+      position:relative;overflow:hidden;
+    }
+    .h-logo::before{
+      content:'';position:absolute;inset:3px;border-radius:50%;
+      border:1px solid rgba(0,212,255,.3);
+      animation:spin-cw 6s linear infinite;
+    }
+    @keyframes logo-pulse{
+      0%,100%{box-shadow:0 0 8px var(--cyan),0 0 20px rgba(0,212,255,.2)}
+      50%{box-shadow:0 0 18px var(--cyan),0 0 50px rgba(0,212,255,.4)}
+    }
+    @keyframes spin-cw{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+    .h-title h1{
+      font-family:var(--font-hud);font-size:1.25rem;font-weight:700;
+      letter-spacing:.35em;color:var(--cyan);
+      text-shadow:0 0 12px var(--cyan);
+      animation:title-flicker 9s infinite;
+    }
+    @keyframes title-flicker{0%,97%,100%{opacity:1}98%{opacity:.8}99%{opacity:.95}}
+    .h-title p{font-size:.6rem;letter-spacing:.2em;color:rgba(0,212,255,.4);margin-top:.1rem}
+    .h-right{display:flex;align-items:center;gap:2rem}
+    .h-stat{display:flex;align-items:center;gap:.5rem;font-size:.7rem}
+    .h-stat .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:blink 2.5s ease-in-out infinite;box-shadow:0 0 6px var(--green)}
+    .h-stat.warn .dot{background:var(--gold);box-shadow:0 0 6px var(--gold)}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+    #clock{font-family:var(--font-hud);font-size:1rem;color:var(--cyan);text-shadow:var(--glow-s)}
+    #clock small{display:block;font-size:.5rem;letter-spacing:.15em;color:rgba(0,212,255,.4);font-weight:300}
+
+    /* ─── STATE BADGE (center above orb) ─── */
+    #state-badge{
+      position:fixed;top:50%;left:50%;
+      transform:translate(-50%,calc(-50% - 240px));
+      z-index:30;
+      font-family:var(--font-hud);font-size:.7rem;letter-spacing:.35em;
+      padding:.4rem 1.4rem;
+      border:1px solid var(--cyan);border-radius:2px;
+      color:var(--cyan);background:rgba(0,212,255,.06);
+      box-shadow:var(--glow-s);
+      transition:all .4s ease;
+    }
+
+    /* ─── TELEMETRY PANEL (bottom-left) ─── */
+    #telemetry{
+      position:fixed;bottom:1.5rem;left:1.5rem;z-index:20;
+      width:360px;
+      background:var(--panel);
+      border:1px solid var(--border);border-radius:8px;
+      padding:1rem;backdrop-filter:blur(16px);
+      box-shadow:0 0 30px rgba(0,212,255,.1);
+    }
+    #telemetry::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--cyan),transparent)}
+    #telemetry::after{content:'';position:absolute;bottom:0;right:0;width:14px;height:14px;border-bottom:1px solid var(--border-hi);border-right:1px solid var(--border-hi)}
+    .t-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;padding-bottom:.6rem;border-bottom:1px solid var(--border)}
+    .t-title{font-size:.6rem;letter-spacing:.2em;color:rgba(0,212,255,.5);display:flex;align-items:center;gap:.5rem}
+    .t-dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:blink 2s infinite}
+    #log-lines{height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+    #log-lines::-webkit-scrollbar{width:2px}
+    #log-lines::-webkit-scrollbar-thumb{background:var(--border-hi)}
+    .log-entry{font-size:.72rem;color:rgba(0,212,255,.75);line-height:1.4;animation:log-in .3s ease}
+    @keyframes log-in{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+    .log-entry.user{color:#fff}
+    .log-entry.jarvis{color:var(--cyan2)}
+    .log-entry.sys{color:rgba(0,212,255,.4)}
+    .log-entry.err{color:var(--red)}
+    #text-row{display:flex;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)}
+    #text-in{
+      flex:1;background:rgba(0,212,255,.04);border:1px solid var(--border);border-radius:4px;
+      padding:.4rem .75rem;color:#e8f8ff;font-family:var(--font-mono);font-size:.75rem;outline:none;
+      transition:border-color .2s,box-shadow .2s;
+    }
+    #text-in::placeholder{color:rgba(0,212,255,.25)}
+    #text-in:focus{border-color:var(--cyan);box-shadow:0 0 10px rgba(0,212,255,.2)}
+    #send-btn{
+      background:rgba(0,212,255,.08);border:1px solid var(--cyan);border-radius:4px;
+      padding:.4rem .9rem;color:var(--cyan);cursor:pointer;font-size:.85rem;
+      transition:all .2s;
+    }
+    #send-btn:hover{background:rgba(0,212,255,.18);box-shadow:var(--glow-s)}
+
+    /* ─── HEALTH PANEL (bottom-right) ─── */
+    #health{
+      position:fixed;bottom:1.5rem;right:1.5rem;z-index:20;
+      width:230px;
+      background:var(--panel);border:1px solid var(--border);border-radius:8px;
+      padding:1rem;backdrop-filter:blur(16px);
+      box-shadow:0 0 30px rgba(0,212,255,.08);
+    }
+    #health::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--cyan),transparent)}
+    .panel-ttl{font-size:.58rem;letter-spacing:.2em;color:rgba(0,212,255,.4);margin-bottom:.8rem}
+    .h-row{display:flex;align-items:center;gap:.6rem;padding:.35rem 0;border-bottom:1px solid rgba(0,212,255,.07);font-size:.7rem}
+    .h-row:last-child{border:none}
+    .h-icon{font-size:.85rem}
+    .h-label{flex:1;color:rgba(0,212,255,.55)}
+    .h-val{font-size:.65rem;font-family:var(--font-mono)}
+    .ok{color:var(--green)}.warn{color:var(--gold)}.err{color:var(--red)}
+
+    /* ─── QUICK ACTIONS (top-right under header) ─── */
+    #actions{
+      position:fixed;top:80px;right:1.5rem;z-index:20;
+      display:flex;flex-direction:column;gap:.4rem;
+    }
+    .act-btn{
+      background:rgba(0,5,12,.8);border:1px solid var(--border);border-radius:5px;
+      padding:.45rem .8rem;color:rgba(0,212,255,.7);cursor:pointer;
+      font-family:var(--font-mono);font-size:.68rem;letter-spacing:.05em;
+      text-align:left;transition:all .2s;backdrop-filter:blur(8px);
+      display:flex;align-items:center;gap:.5rem;
+    }
+    .act-btn:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08);box-shadow:var(--glow-s)}
+
+    /* ─── METRICS (top-left under header) ─── */
+    #metrics{
+      position:fixed;top:80px;left:1.5rem;z-index:20;
+      display:grid;grid-template-columns:1fr 1fr;gap:.5rem;width:210px;
+    }
+    .m-card{
+      background:rgba(0,5,12,.8);border:1px solid var(--border);border-radius:6px;
+      padding:.6rem .7rem;text-align:center;backdrop-filter:blur(8px);
+    }
+    .m-val{font-family:var(--font-hud);font-size:1.1rem;color:var(--cyan);text-shadow:var(--glow-s)}
+    .m-lbl{font-size:.5rem;letter-spacing:.1em;color:rgba(0,212,255,.4);margin-top:.15rem;text-transform:uppercase}
+
+    /* ─── GESTURE FEED ─── */
+    #gesture-box{
+      position:fixed;top:80px;right:1.5rem;z-index:20;
+      /* hidden until gesture panel replaces actions – we'll stack them */
+    }
+
+    /* ─── UPTIME ─── */
+    #uptime-tag{
+      font-family:var(--font-hud);font-size:.55rem;letter-spacing:.12em;
+      color:rgba(0,212,255,.4);padding:.2rem .6rem;
+      border:1px solid var(--border);border-radius:2px;
+    }
+    #uptime-val{color:var(--cyan)}
+
+    /* ─── WAVEFORM ─── */
+    #waveform{display:flex;align-items:center;gap:2px;height:28px;justify-content:center;margin:.5rem 0}
+    .w-bar{width:3px;border-radius:2px;background:var(--cyan);box-shadow:0 0 4px var(--cyan)}
+    .w-bar:nth-child(1){animation:wave 1.1s 0.00s ease-in-out infinite}
+    .w-bar:nth-child(2){animation:wave 1.1s 0.10s ease-in-out infinite}
+    .w-bar:nth-child(3){animation:wave 1.1s 0.20s ease-in-out infinite}
+    .w-bar:nth-child(4){animation:wave 1.1s 0.30s ease-in-out infinite}
+    .w-bar:nth-child(5){animation:wave 1.1s 0.40s ease-in-out infinite}
+    .w-bar:nth-child(6){animation:wave 1.1s 0.30s ease-in-out infinite}
+    .w-bar:nth-child(7){animation:wave 1.1s 0.20s ease-in-out infinite}
+    .w-bar:nth-child(8){animation:wave 1.1s 0.10s ease-in-out infinite}
+    .w-bar:nth-child(9){animation:wave 1.1s 0.00s ease-in-out infinite}
+    @keyframes wave{0%,100%{height:3px}50%{height:22px}}
+
+    /* ─── RESPONSIVE ─── */
+    @media(max-width:900px){
+      #metrics,#actions{display:none}
+      #telemetry{width:calc(100vw - 3rem)}
+      #health{display:none}
+    }
+  </style>
+</head>
+<body>
+<!-- Backgrounds -->
+<div id="grid-bg"></div>
+<div id="radial-bg"></div>
+<div id="scanlines"></div>
+
+<!-- Three.js canvas mount -->
+<div id="three-canvas"></div>
+
+<!-- ═══ HEADER ═══ -->
+<header>
+  <div class="h-brand">
+    <div class="h-logo">J</div>
+    <div class="h-title">
+      <h1>JARVIS</h1>
+      <p>Just A Rather Very Intelligent System &mdash; Command Interface</p>
+    </div>
+  </div>
+  <div class="h-right">
+    <div class="h-stat">
+      <span class="dot"></span>
+      <span id="core-status">CORE STATUS: ONLINE</span>
+    </div>
+    <div id="uptime-tag">UPTIME <span id="uptime-val">00:00:00</span></div>
+    <div id="clock">
+      <span id="clk-time">--:--:--</span>
+      <small id="clk-date"></small>
+    </div>
+  </div>
+</header>
+
+<!-- ═══ STATE BADGE ═══ -->
+<div id="state-badge">STANDING BY</div>
+
+<!-- ═══ METRIC CARDS ═══ -->
+<div id="metrics">
+  <div class="m-card"><div class="m-val" id="m-turns">0</div><div class="m-lbl">Turns</div></div>
+  <div class="m-card"><div class="m-val" id="m-lat">--</div><div class="m-lbl">Latency</div></div>
+  <div class="m-card"><div class="m-val" id="m-mem">0</div><div class="m-lbl">Memories</div></div>
+  <div class="m-card"><div class="m-val" id="m-rem">0</div><div class="m-lbl">Reminders</div></div>
+</div>
+
+<!-- ═══ QUICK ACTIONS ═══ -->
+<div id="actions">
+  <button class="act-btn" onclick="sendCmd('what time is it')">&#128336; Time</button>
+  <button class="act-btn" onclick="sendCmd('what is the weather')">&#127780; Weather</button>
+  <button class="act-btn" onclick="sendCmd('brief me')">&#128203; Brief Me</button>
+  <button class="act-btn" onclick="sendCmd('list my reminders')">&#9201; Reminders</button>
+  <button class="act-btn" onclick="sendCmd('what is on my screen')">&#128065; See Screen</button>
+  <button class="act-btn" onclick="sendCmd('what do you remember')">&#129504; Memory</button>
+</div>
+
+<!-- ═══ TELEMETRY PANEL ═══ -->
+<div id="telemetry">
+  <div class="t-header">
+    <span class="t-title">&#9632; NEURAL TELEMETRY</span>
+    <span class="t-dot"></span>
+  </div>
+  <div id="waveform">
+    <div class="w-bar" style="height:4px"></div>
+    <div class="w-bar" style="height:10px"></div>
+    <div class="w-bar" style="height:18px"></div>
+    <div class="w-bar" style="height:14px"></div>
+    <div class="w-bar" style="height:22px"></div>
+    <div class="w-bar" style="height:14px"></div>
+    <div class="w-bar" style="height:18px"></div>
+    <div class="w-bar" style="height:10px"></div>
+    <div class="w-bar" style="height:4px"></div>
+  </div>
+  <div id="log-lines"></div>
+  <div id="text-row">
+    <input id="text-in" type="text" placeholder="Issue a command, sir&hellip;" autocomplete="off"/>
+    <button id="send-btn" title="Send">&#9654;</button>
+  </div>
+</div>
+
+<!-- ═══ HEALTH PANEL ═══ -->
+<div id="health">
+  <div class="panel-ttl">&#9632; SYSTEM HEALTH</div>
+  <div class="h-row"><span class="h-icon">&#127908;</span><span class="h-label">Microphone</span><span class="h-val ok" id="h-mic">&#10003; Active</span></div>
+  <div class="h-row"><span class="h-icon">&#129504;</span><span class="h-label">Brain (LLM)</span><span class="h-val ok" id="h-brain">&#10003; Gemini</span></div>
+  <div class="h-row"><span class="h-icon">&#128266;</span><span class="h-label">Voice (TTS)</span><span class="h-val ok" id="h-tts">&#10003; SAPI</span></div>
+  <div class="h-row"><span class="h-icon">&#128065;</span><span class="h-label">Vision</span><span class="h-val ok" id="h-vis">&#10003; Ready</span></div>
+  <div class="h-row"><span class="h-icon">&#128190;</span><span class="h-label">Memory DB</span><span class="h-val ok" id="h-db">&#10003; SQLite</span></div>
+  <div class="h-row"><span class="h-icon">&#127381;</span><span class="h-label">Jarvis PID</span><span class="h-val" id="h-pid" style="color:rgba(0,212,255,.5)">--</span></div>
+</div>
+
+<!-- ═══ THREE.JS ORB ═══ -->
+<script type="module">
+import * as THREE from 'three';
+
+/* ── Scene Setup ── */
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setSize(W,H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setClearColor(0x000000,0);
+document.getElementById('three-canvas').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60,W/H,.1,100);
+camera.position.set(0,0,5);
+
+/* ── Lights ── */
+scene.add(new THREE.AmbientLight(0x00d4ff,.6));
+const dLight = new THREE.DirectionalLight(0xffffff,1.5);
+dLight.position.set(5,5,5);
+scene.add(dLight);
+const pLight1 = new THREE.PointLight(0x00f3ff,4,20);
+pLight1.position.set(-4,-4,-4);
+scene.add(pLight1);
+const pLight2 = new THREE.PointLight(0x00aaff,2,20);
+pLight2.position.set(4,2,2);
+scene.add(pLight2);
+
+/* ── Core Sphere (distortion via displacement) ── */
+const geo = new THREE.IcosahedronGeometry(1.7,64);
+const mat = new THREE.MeshStandardMaterial({
+  color:0x00d4ff, metalness:.85, roughness:.08,
+  transparent:true, opacity:.82,
+  wireframe:false,
+  envMapIntensity:1.2,
+});
+const sphere = new THREE.Mesh(geo,mat);
+scene.add(sphere);
+
+/* ── Wireframe Shell ── */
+const wfGeo = new THREE.IcosahedronGeometry(1.72,8);
+const wfMat = new THREE.MeshBasicMaterial({color:0x00f3ff,wireframe:true,transparent:true,opacity:.08});
+const wireframe = new THREE.Mesh(wfGeo,wfMat);
+scene.add(wireframe);
+
+/* ── Outer Glow Ring (horizontal) ── */
+const ring1 = new THREE.Mesh(
+  new THREE.TorusGeometry(2.2,.025,16,120),
+  new THREE.MeshBasicMaterial({color:0x00d4ff,transparent:true,opacity:.55})
+);
+ring1.rotation.x = Math.PI/2;
+scene.add(ring1);
+
+/* ── Tilted Ring ── */
+const ring2 = new THREE.Mesh(
+  new THREE.TorusGeometry(2.45,.015,12,120),
+  new THREE.MeshBasicMaterial({color:0x0066ff,transparent:true,opacity:.3})
+);
+ring2.rotation.x = Math.PI/3;
+ring2.rotation.z = Math.PI/6;
+scene.add(ring2);
+
+/* ── Inner Arc Segments ── */
+function makeArc(r,arc,rotY){
+  const pts=[]; const segs=64;
+  for(let i=0;i<=segs;i++){
+    const a=(i/segs)*arc;
+    pts.push(new THREE.Vector3(Math.cos(a)*r,0,Math.sin(a)*r));
+  }
+  const g=new THREE.BufferGeometry().setFromPoints(pts);
+  const m=new THREE.LineBasicMaterial({color:0x00f3ff,transparent:true,opacity:.6});
+  const l=new THREE.Line(g,m);
+  l.rotation.y=rotY;
+  return l;
+}
+const arc1=makeArc(1.3,Math.PI*.7,0);
+const arc2=makeArc(1.1,Math.PI*.5,Math.PI*.6);
+const arc3=makeArc(.9,Math.PI*.4,Math.PI*1.2);
+scene.add(arc1,arc2,arc3);
+
+/* ── Particles ── */
+const pCount=180;
+const pPos=new Float32Array(pCount*3);
+for(let i=0;i<pCount;i++){
+  const r=2.8+Math.random()*.8,th=Math.random()*Math.PI*2,ph=Math.random()*Math.PI;
+  pPos[i*3]=r*Math.sin(ph)*Math.cos(th);
+  pPos[i*3+1]=r*Math.sin(ph)*Math.sin(th);
+  pPos[i*3+2]=r*Math.cos(ph);
+}
+const pGeo=new THREE.BufferGeometry();
+pGeo.setAttribute('position',new THREE.BufferAttribute(pPos,3));
+const pMat=new THREE.PointsMaterial({color:0x00f3ff,size:.04,transparent:true,opacity:.7});
+const particles=new THREE.Points(pGeo,pMat);
+scene.add(particles);
+
+/* ── Core glow (inner bright sphere) ── */
+const coreGeo=new THREE.SphereGeometry(.4,32,32);
+const coreMat=new THREE.MeshBasicMaterial({color:0xc8f8ff,transparent:true,opacity:.9});
+const core=new THREE.Mesh(coreGeo,coreMat);
+scene.add(core);
+
+/* ── Vertex displacement for distortion effect ── */
+const origPos=geo.attributes.position.array.slice();
+function distortSphere(t,intensity){
+  const pos=geo.attributes.position.array;
+  for(let i=0;i<pos.length;i+=3){
+    const ox=origPos[i],oy=origPos[i+1],oz=origPos[i+2];
+    const r=Math.sqrt(ox*ox+oy*oy+oz*oz);
+    const nx=ox/r,ny=oy/r,nz=oz/r;
+    const d=intensity*(Math.sin(nx*4+t)*Math.sin(ny*4+t*.7)*Math.sin(nz*3+t*.5));
+    pos[i]=ox+nx*d;pos[i+1]=oy+ny*d;pos[i+2]=oz+nz*d;
+  }
+  geo.attributes.position.needsUpdate=true;
+  geo.computeVertexNormals();
+}
+
+/* ── State colour map ── */
+const STATE_COL={
+  idle:0x00d4ff, listening:0x00ffcc, thinking:0xe8a800,
+  speaking:0x44eeff, followup:0x1ab8d4, muted:0x445055,
+  error:0xff4444, booting:0xe8a800,
+};
+let currentCol=new THREE.Color(0x00d4ff);
+let targetCol=new THREE.Color(0x00d4ff);
+let pulseIntensity=.12;
+let spinSpeed=.25;
+
+/* ── Mouse drag orbit ── */
+let isDragging=false,prevMX=0,prevMY=0;
+renderer.domElement.addEventListener('mousedown',e=>{isDragging=true;prevMX=e.clientX;prevMY=e.clientY});
+window.addEventListener('mousemove',e=>{
+  if(!isDragging)return;
+  const dx=e.clientX-prevMX,dy=e.clientY-prevMY;
+  sphere.rotation.y+=dx*.005;sphere.rotation.x+=dy*.005;
+  wireframe.rotation.y+=dx*.005;wireframe.rotation.x+=dy*.005;
+  prevMX=e.clientX;prevMY=e.clientY;
+});
+window.addEventListener('mouseup',()=>{isDragging=false});
+
+/* ── Scroll zoom ── */
+renderer.domElement.addEventListener('wheel',e=>{
+  camera.position.z=Math.max(3,Math.min(8,camera.position.z+e.deltaY*.005));
+});
+
+/* ── Animation loop ── */
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t=clock.getElapsedTime();
+
+  // Colour lerp
+  mat.color.lerp(targetCol,.04);
+  ring1.material.color.lerp(targetCol,.04);
+  core.material.color.lerp(new THREE.Color(0xc8f8ff),.02);
+
+  // Spin
+  sphere.rotation.y+=spinSpeed*.003;
+  wireframe.rotation.y-=spinSpeed*.002;
+  ring1.rotation.z+=spinSpeed*.001;
+  ring2.rotation.y+=spinSpeed*.0015;
+  arc1.rotation.y+=spinSpeed*.004;
+  arc2.rotation.y-=spinSpeed*.005;
+  arc3.rotation.y+=spinSpeed*.003;
+  particles.rotation.y+=.0003;
+
+  // Distort
+  distortSphere(t,pulseIntensity);
+
+  // Core breathe
+  const breathe=1+.15*Math.sin(t*1.8);
+  core.scale.setScalar(breathe);
+
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ── Resize ── */
+window.addEventListener('resize',()=>{
+  const w=window.innerWidth,h=window.innerHeight;
+  renderer.setSize(w,h);
+  camera.aspect=w/h;camera.updateProjectionMatrix();
+});
+
+/* ── Expose state setter globally ── */
+window._setOrbState=function(state){
+  const c=STATE_COL[state]||STATE_COL.idle;
+  targetCol=new THREE.Color(c);
+  const pulseMap={idle:.12,listening:.35,thinking:.22,speaking:.42,followup:.18,muted:.02,error:.08,booting:.2};
+  const spinMap={idle:.25,listening:2.4,thinking:4.5,speaking:1.8,followup:.7,muted:0,error:0,booting:2.8};
+  pulseIntensity=pulseMap[state]||.12;
+  spinSpeed=spinMap[state]||.25;
+};
+</script>
+
+<!-- ═══ UI LOGIC ═══ -->
+<script>
+const HEALTH='../data/health.json';
+const STATE_LABELS={idle:'STANDING BY',listening:'LISTENING',thinking:'THINKING',
+  speaking:'SPEAKING',followup:'FOLLOW-UP',muted:'MUTED',error:'ERROR',booting:'INITIALISING'};
+const STATE_COL={idle:'#00d4ff',listening:'#00ffcc',thinking:'#e8a800',
+  speaking:'#44eeff',followup:'#1ab8d4',muted:'#445055',error:'#ff4444',booting:'#e8a800'};
+
+let turns=0, startTs=Date.now(), currentState='idle';
+
+/* ── Clock ── */
+function tickClock(){
+  const n=new Date();
+  document.getElementById('clk-time').textContent=n.toLocaleTimeString('en-GB',{hour12:false});
+  document.getElementById('clk-date').textContent=n.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
+  const s=Math.floor((Date.now()-startTs)/1000);
+  const h=String(Math.floor(s/3600)).padStart(2,'0');
+  const m=String(Math.floor((s%3600)/60)).padStart(2,'0');
+  const ss=String(s%60).padStart(2,'0');
+  document.getElementById('uptime-val').textContent=`${h}:${m}:${ss}`;
+}
+tickClock();setInterval(tickClock,1000);
+
+/* ── Log ── */
+function addLog(text,cls='sys'){
+  const el=document.createElement('div');
+  el.className=`log-entry ${cls}`;
+  const now=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.textContent=`[${now}] ${cls==='user'?'YOU':cls==='jarvis'?'JARVIS':'SYS'} › ${text}`;
+  const log=document.getElementById('log-lines');
+  log.appendChild(el);
+  log.scrollTop=log.scrollHeight;
+}
+
+/* Boot logs */
+addLog('JARVIS OS v3.0 initialised…','sys');
+addLog('Quantum core stabilised.','sys');
+addLog('Neural voice interface ready.','sys');
+addLog('Say "Hey Jarvis" or press Ctrl+Space','sys');
+
+/* ── Set state ── */
+function setState(state){
+  if(state===currentState)return;
+  currentState=state;
+  const badge=document.getElementById('state-badge');
+  const c=STATE_COL[state]||STATE_COL.idle;
+  badge.textContent=STATE_LABELS[state]||state.toUpperCase();
+  badge.style.color=c;badge.style.borderColor=c;
+  badge.style.boxShadow=`0 0 12px ${c}66`;
+  document.getElementById('core-status').textContent=`CORE STATUS: ${(STATE_LABELS[state]||state).toUpperCase()}`;
+  if(window._setOrbState) window._setOrbState(state);
+}
+
+/* ── Send command (demo responses) ── */
+function sendCmd(text){
+  text=text||document.getElementById('text-in').value.trim();
+  if(!text)return;
+  document.getElementById('text-in').value='';
+  addLog(text,'user');
+  setState('thinking');
+  const t0=Date.now();
+  setTimeout(()=>{
+    setState('speaking');
+    const lat=Date.now()-t0;
+    document.getElementById('m-lat').textContent=lat+'ms';
+    const replies={
+      'what time is it':'It is '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+', sir.',
+      'brief me':'Good '+part()+', sir. Systems nominal. No reminders pending.',
+      'what is the weather':'Fetching weather data now, sir. One moment.',
+      'list my reminders':'No reminders pending at this moment, sir.',
+      'what do you remember':'Memory module active. Ask me about specific topics, sir.',
+      'what is on my screen':'I can see your screen, sir. Everything appears in order.',
+    };
+    const r=replies[text.toLowerCase()]||`Understood, sir. Processing "${text}".`;
+    addLog(r,'jarvis');
+    turns++;document.getElementById('m-turns').textContent=turns;
+    setTimeout(()=>setState('idle'),2500);
+  },600+Math.random()*600);
+}
+function part(){const h=new Date().getHours();return h<12?'morning':h<18?'afternoon':'evening'}
+
+document.getElementById('text-in').addEventListener('keydown',e=>{if(e.key==='Enter')sendCmd()});
+document.getElementById('send-btn').addEventListener('click',()=>sendCmd());
+
+/* ── Health polling ── */
+async function pollHealth(){
+  try{
+    const r=await fetch(HEALTH+'?t='+Date.now());
+    if(!r.ok)return;
+    const h=await r.json();
+    if(h.state)setState(h.state);
+    if(h.uptime_s)startTs=Date.now()-h.uptime_s*1000;
+    if(h.pid)document.getElementById('h-pid').textContent=h.pid;
+    if(h.mic_alive!==undefined){
+      const el=document.getElementById('h-mic');
+      el.textContent=h.mic_alive?'✓ Active':'⚠ Stalled';
+      el.className='h-val '+(h.mic_alive?'ok':'warn');
+    }
+  }catch(_){}
+}
+setInterval(pollHealth,3000);pollHealth();
+
+/* ── Seed metrics ── */
+document.getElementById('m-mem').textContent=Math.floor(Math.random()*20+5);
+document.getElementById('m-rem').textContent=Math.floor(Math.random()*3);
+</script>
+</body>
+</html>

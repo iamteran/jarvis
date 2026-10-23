@@ -6,6 +6,8 @@ required, which kills almost all false activations from TV chatter and clicks.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +15,54 @@ import numpy as np
 log = logging.getLogger("audio.wake")
 
 _CANDIDATE_SUFFIXES = ("", "_v0.1", "_v0.2")
+
+
+def _candidate_model_roots() -> list[Path]:
+    """Return all openWakeWord resource roots that may contain trained models.
+
+    Some Windows setups have multiple Python installs, and one of them may be missing
+    the packaged wake-word assets even though the repo's .venv has them. We prefer
+    any explicit .venv site-packages path before falling back to the active interpreter.
+    """
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    venv_root = repo_root / ".venv"
+    for candidate in (
+        venv_root / "Lib" / "site-packages" / "openwakeword" / "resources" / "models",
+        venv_root / "lib" / "site-packages" / "openwakeword" / "resources" / "models",
+    ):
+        if candidate.exists():
+            roots.append(candidate)
+            seen.add(candidate.resolve())
+
+    try:
+        import openwakeword
+        package_root = Path(openwakeword.__file__).resolve().parent / "resources" / "models"
+        if package_root.exists() and package_root.resolve() not in seen:
+            roots.append(package_root)
+            seen.add(package_root.resolve())
+    except Exception:  # pragma: no cover - optional package may not exist yet
+        pass
+
+    for base in sys.path:
+        try:
+            p = Path(base).resolve() / "openwakeword" / "resources" / "models"
+        except Exception:
+            continue
+        if p.exists() and p.resolve() not in seen:
+            roots.append(p)
+            seen.add(p.resolve())
+
+    for base in (Path.home() / "AppData" / "Roaming" / "Python", Path.home() / "AppData" / "Local" / "Programs" / "Python"):
+        if base.exists():
+            for match in base.rglob("openwakeword/resources/models"):
+                if match.exists() and match.resolve() not in seen:
+                    roots.append(match)
+                    seen.add(match.resolve())
+
+    return roots
 
 
 def _install_sklearn_stub() -> None:
