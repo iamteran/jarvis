@@ -104,6 +104,18 @@ class Reminders:
             parts.append(f"{row['text']} at {time.strftime('%H:%M', time.localtime(row['due']))}")
         return "You have: " + "; ".join(parts) + "."
 
+    def pending(self) -> list[dict]:
+        """Structured pending reminders for the dashboard."""
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT id, text, due FROM reminders WHERE spoken = 0 ORDER BY due"
+            ).fetchall()
+        return [
+            {"id": row["id"], "text": row["text"],
+             "due": row["due"], "due_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(row["due"]))}
+            for row in rows
+        ]
+
 
 def _humanise(minutes: float) -> str:
     if minutes < 1:

@@ -110,7 +110,13 @@ class Config:
     )
     fish_model: str = _s("FISH_MODEL", "s2.1-pro-free")
 
-    # ---- wake word ----
+    # ---- email (Gmail) ----
+    gmail_address: str = _s("GMAIL_ADDRESS")
+    gmail_app_password: str = _s("GMAIL_APP_PASSWORD")
+    email_poll_interval_s: int = _i("EMAIL_POLL_INTERVAL_S", 300)
+
+    # ---- dashboard ----
+    dashboard_port: int = _i("JARVIS_DASHBOARD_PORT", 8765)
     wake_model: str = _s("JARVIS_WAKE_MODEL", "hey_jarvis")
     wake_threshold: float = _f("JARVIS_WAKE_THRESHOLD", 0.50)
     wake_frames: int = _i("JARVIS_WAKE_FRAMES", 3)  # consecutive frames over threshold
@@ -182,6 +188,9 @@ class Config:
                 problems.append("FISH_API_KEY is missing in .env (required because JARVIS_TTS=fish)")
             if not self.fish_voice_id:
                 problems.append("FISH_VOICE_ID is missing in .env (required because JARVIS_TTS=fish)")
+        # Gmail is optional; if partially configured, warn clearly
+        if bool(self.gmail_address) != bool(self.gmail_app_password):
+            problems.append("Set both GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env (or neither) to use email")
         return problems
 
 

@@ -41,6 +41,12 @@ _ACCENT_REPAIRS = (
     (re.compile(r"\bterm\s*inal\b", re.I), "terminal"),
     (re.compile(r"\bvs\s*code\b", re.I), "visual studio code"),
     (re.compile(r"\bvscod(?:e)?\b", re.I), "visual studio code"),
+    # Gmail and email get mangled by accented speech ("gee mail", "g males")
+    (re.compile(r"\bg\s*mails?\b", re.I), "gmail"),
+    (re.compile(r"\bgee\s*mails?\b", re.I), "gmail"),
+    (re.compile(r"\bg-?mail\b", re.I), "gmail"),
+    (re.compile(r"\be\s*mails?\b", re.I), "email"),
+    (re.compile(r"\bhimail\b", re.I), "email"),
     # "search" gets garbled a lot by Whisper with accents
     (re.compile(r"\band\s+such\b", re.I), "and search"),
     (re.compile(r"\band\s+sutch\b", re.I), "and search"),
@@ -122,6 +128,28 @@ FORGET_RE = re.compile(r"^(?:forget|stop remembering|delete from memory)\b(?:\s+
 ALIAS_RE = re.compile(r"^(?:remember|when i say|call)\s+(?P<name>.+?)\s+(?:means?|refer(?:s)? to|is)\s+(?P<target>.+)$", re.I)
 DASHBOARD_RE = re.compile(r"\b(?:open|show|launch)?\s*(?:the\s+)?dashboard\b|\bopen\s+jarvis\s+ui\b", re.I)
 DELETE_RE = re.compile(r"^(?:delete|remove|trash)\s+(?:the\s+)?(?:file\s+)?(?P<path>.+?)\s*$", re.I)
+
+# --- email (Gmail over IMAP; replies only ever become drafts) ---
+GMAIL_OPEN_RE = re.compile(r"^(?:open|go to|launch)\s+(?:my\s+|the\s+)?gmail(?:\.com)?\s*$", re.I)
+EMAIL_READ_RE = re.compile(
+    r"^(?:please\s+)?(?:read|open|show)(?:\s+me)?(?:\s+(?:my|the))?"
+    r"(?:\s+(?:latest|newest|last|first|most recent))?"
+    r"\s+(?:email|message|mail)(?:\s+from\s+(?P<who>.+?))?\s*$", re.I)
+EMAIL_REPLY_RE = re.compile(
+    r"^(?:please\s+)?(?:draft(?:\s+a)?\s+)?(?:reply|respond)"
+    r"(?:\s+to)?(?:\s+(?:that|this|the|my|his|her|their))?"
+    r"(?:\s+(?:email|message|mail))?"
+    r"(?:\s+from\s+(?P<who>[^,]+?))?"
+    r"(?:\s+(?:saying|and say|with|that))?[:\s]+(?P<body>.+)$", re.I)
+EMAIL_REPLY_EMPTY_RE = re.compile(
+    r"^(?:please\s+)?(?:draft(?:\s+a)?\s+)?(?:reply|respond)(?:\s+to)?"
+    r"(?:\s+(?:that|this|the|my))?(?:\s+(?:email|message|mail))?"
+    r"(?:\s+from\s+(?P<who>.+?))?\s*$", re.I)
+EMAIL_SUMMARY_RE = re.compile(
+    r"\b(?:check|read|see|show|scan|any)\b[^.?!]{0,30}\b(?:emails?|gmails?|inbox|mail)\b"
+    r"|\b(?:do|did|have|has|got)\b[^.?!]{0,25}\b(?:emails?|gmails?|mail)\b"
+    r"|\b(?:what(?:'s| is)|whats)\b[^.?!]{0,15}\bin\s+(?:my\s+)?(?:inbox|email)\b"
+    r"|\b(?:email|inbox)\s+(?:summary|status|check)\b", re.I)
 
 
 def _repair_accent(text: str) -> str:
@@ -209,6 +237,32 @@ class Router:
 
             webbrowser.open("https://calendar.google.com")
             return True, "Opening your calendar, sir."
+
+        # ---- email: read, summarise, and reply as a draft (never send) ----
+        if GMAIL_OPEN_RE.match(clean):
+            import webbrowser
+
+            webbrowser.open("https://mail.google.com")
+            return True, "Opening Gmail, sir."
+        match = EMAIL_READ_RE.match(clean)
+        if match:
+            from .email_client import read_speech
+
+            who = (match.group("who") or "latest").strip()
+            return True, read_speech(who)
+        match = EMAIL_REPLY_RE.match(clean)
+        if match:
+            from .email_client import reply_speech
+
+            body = match.group("body").strip()
+            who = (match.group("who") or "latest").strip()
+            return True, reply_speech(who, body)
+        if EMAIL_REPLY_EMPTY_RE.match(clean):
+            return True, "What should the reply say, sir?"
+        if EMAIL_SUMMARY_RE.search(clean):
+            from .email_client import summary_speech
+
+            return True, summary_speech()
 
         # "open youtube and play any song" — open the site at the searched query.
         match = SITE_SEARCH_RE.match(clean)
@@ -424,10 +478,9 @@ class Router:
 
         # --- dashboard ---
         if DASHBOARD_RE.search(clean):
-            import pathlib, webbrowser
-            dash = pathlib.Path(__file__).resolve().parent / "ui" / "dashboard.html"
-            webbrowser.open(dash.as_uri())
-            return True, "Opening the command interface in your browser, sir."
+            from .webui import open_dashboard
+
+            return True, open_dashboard()
 
         return False, ""
 

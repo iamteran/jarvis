@@ -357,6 +357,33 @@ class Tools:
             _obj(name=_str("App or window name, e.g. terminal, powershell, cmd, chrome", True)),
             self._focus_app,
         ))
+        self.add(Tool(
+            "check_email",
+            "Read today's Gmail inbox: how many arrived, who they are from and the subjects.",
+            _obj(limit=_int("How many recent emails to summarise (1-20)", False, 1, 20)),
+            self._check_email,
+        ))
+        self.add(Tool(
+            "read_email",
+            "Read out the full text of an email, e.g. the latest one or one from a named sender. "
+            "Use this when the user says 'read the email from ...'.",
+            _obj(who=_str("Sender, subject fragment, or 'latest'", False)),
+            self._read_email,
+        ))
+        self.add(Tool(
+            "draft_email_reply",
+            "Save a reply in Gmail Drafts. This never sends: the user presses Send in Gmail. "
+            "Use when the user says 'reply to that email saying ...'.",
+            _obj(body=_str("The reply text to save", True),
+                 who=_str("Sender or subject fragment; omit for the latest email", False)),
+            self._draft_email_reply,
+        ))
+        self.add(Tool(
+            "system_pulse",
+            "Report the laptop's battery, CPU, memory, disk space and uptime.",
+            _obj(),
+            self._system_pulse,
+        ))
         # Optional: only register once its handler exists, so a half-finished skill
         # cannot stop the whole toolbelt (and Jarvis) from starting.
         if hasattr(self, "_cloud"):
@@ -591,6 +618,28 @@ class Tools:
         if "upcoming" in (scope or "").lower() or "next" in (scope or "").lower():
             return calendar.speech_upcoming()
         return calendar.speech_today()
+
+    # -------------------------------------------------------------------- email
+    def _check_email(self, limit: int = 8) -> str:
+        from .email_client import summary_speech
+
+        return summary_speech(int(limit))
+
+    def _read_email(self, who: str = "latest") -> str:
+        from .email_client import read_speech
+
+        return read_speech((who or "latest").strip())
+
+    def _draft_email_reply(self, body: str, who: str = "latest") -> str:
+        from .email_client import reply_speech
+
+        return reply_speech((who or "latest").strip(), body)
+
+    # --------------------------------------------------------------------- pulse
+    def _system_pulse(self) -> str:
+        from .skills import pulse
+
+        return pulse.speech()
 
     # ------------------------------------------------------------------ vision
     def _look_at_screen(self, question: str) -> str:

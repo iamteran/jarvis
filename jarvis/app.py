@@ -149,6 +149,12 @@ class Jarvis:
             self._audio_thread.start()
             self._set_state(State.IDLE)
             log.info("Jarvis online — say 'Hey Jarvis' or press Ctrl+Space")
+            try:
+                from .webui import start as start_dashboard
+
+                start_dashboard()
+            except Exception as exc:  # noqa: BLE001 - the dashboard is optional
+                log.warning("dashboard failed to start: %s", exc)
             self.reminders = ReminderService(self._announce)
             self.reminders.start()
             # Wire the live reminder service into the tool layer so that LLM-triggered
@@ -280,6 +286,12 @@ class Jarvis:
             return
         log.info("shutting down (requested by: %s)", reason)
         self._stop.set()
+        try:
+            from .webui import stop as stop_dashboard
+
+            stop_dashboard()
+        except Exception:  # noqa: BLE001
+            pass
         if self.reminders is not None:
             self.reminders.stop()
         try:

@@ -150,6 +150,22 @@ def cmd_check() -> int:
     except Exception as exc:  # noqa: BLE001
         report(False, "Memory/tools", str(exc)[:100])
 
+    # Gmail (optional; login only, never reads mail here)
+    try:
+        from .email_client import probe
+        ok, detail = probe()
+        report(ok, "Email (Gmail)", detail)
+    except Exception as exc:  # noqa: BLE001
+        report(False, "Email (Gmail)", str(exc)[:100])
+
+    # Dashboard (starts with Jarvis, or on demand with --dashboard)
+    try:
+        from .webui import DEFAULT_PORT
+        port = CONFIG.dashboard_port or DEFAULT_PORT
+        report(True, "Dashboard", f"http://127.0.0.1:{port}/ (local only)")
+    except Exception as exc:  # noqa: BLE001
+        report(False, "Dashboard", str(exc)[:100])
+
     # Wake word
     try:
         from .audio.wake import WakeWord
@@ -469,6 +485,39 @@ def cmd_status() -> int:
     return 0 if alive and age < 30 and data.get("mic_alive") else 1
 
 
+def cmd_dashboard() -> int:
+    """Open the command centre; reuse a running Jarvis's server when there is one."""
+    import urllib.request
+    import webbrowser
+
+    from .webui import DEFAULT_PORT, start, stop, url
+
+    _banner()
+    port = CONFIG.dashboard_port or DEFAULT_PORT
+    live = False
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=1.5) as response:
+            live = response.status == 200
+    except Exception:  # noqa: BLE001
+        live = False
+    if not live and start() is None:
+        print("  could not start the dashboard (is another program using the port?)\n")
+        return 1
+    webbrowser.open(url())
+    print(f"  dashboard: {url()}")
+    if live:
+        print("  (served by the running Jarvis)\n")
+        return 0
+    print("  Ctrl+C to stop the dashboard server.\n")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop()
+        print()
+    return 0
+
+
 # ---------------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jarvis", description="Jarvis — voice-operated desktop assistant")
@@ -484,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--autostart", choices=["on", "off"], help="start Jarvis with Windows")
     parser.add_argument("--status", action="store_true", help="show whether Jarvis is running and healthy")
     parser.add_argument("--say", metavar="TEXT", help="send typed text through the same path as speech")
+    parser.add_argument("--dashboard", action="store_true", help="open the live command centre")
     parser.add_argument("--no-orb", action="store_true", help="run without the floating orb")
     parser.add_argument("--debug", action="store_true", help="verbose logging")
     args = parser.parse_args(argv)
@@ -512,6 +562,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status()
     if args.say:
         return cmd_say(args.say)
+    if args.dashboard:
+        return cmd_dashboard()
     return cmd_run(show_orb=not args.no_orb)
 
 
