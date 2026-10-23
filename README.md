@@ -124,8 +124,11 @@ Whisper is the better default here.
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | — | primary brain |
 | `GROQ_API_KEY` | — | optional: fastest brain + ears |
+| `GROK_API_KEY` | — | Grok brain via an OpenAI-compatible gateway (primary here) |
+| `GROK_BASE_URL` | `https://api.openlux.ai/v1` | gateway base URL for Grok |
+| `GROK_MODEL` | `grok-4.7` | Grok model name |
 | `GEMINI_API_KEY` | — | ears + backup brain |
-| `JARVIS_LLM_CHAIN` | `groq:llama-3.3-70b-versatile,deepseek:deepseek-chat,gemini:gemini-3.6-flash,gemini:gemini-3.5-flash` | provider:model order; missing keys are skipped |
+| `JARVIS_LLM_CHAIN` | `grok:grok-4.7,gemini:gemini-3.5-flash-lite,gemini:gemini-3.5-flash` | provider:model order; missing keys are skipped |
 | `JARVIS_STT_MODEL` | `gemini-3.5-flash` | Gemini speech-to-text (fallback `gemini-3.6-flash`) |
 | `JARVIS_TTS` | `sapi` | `sapi` offline · `edge` nicer British voice · `fish` your clone · `auto` edge→sapi |
 | `JARVIS_EDGE_VOICE` | `en-GB-RyanNeural` | edge-tts voice |

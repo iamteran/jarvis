@@ -48,6 +48,9 @@ class Config:
     gemini_api_key: str = _s("GEMINI_API_KEY")
     deepseek_api_key: str = _s("DEEPSEEK_API_KEY")
     groq_api_key: str = _s("GROQ_API_KEY")
+    # Grok through an OpenAI-compatible gateway (api.openlux.ai by default).
+    grok_api_key: str = _s("GROK_API_KEY")
+    grok_base_url: str = _s("GROK_BASE_URL", "https://api.openlux.ai/v1")
     fish_api_key: str = _s("FISH_API_KEY")
     fish_voice_id: str = _s("FISH_VOICE_ID")
 
@@ -55,6 +58,7 @@ class Config:
     deepseek_model: str = _s("DEEPSEEK_MODEL", "deepseek-chat")
     groq_model: str = _s("GROQ_MODEL", "llama-3.3-70b-versatile")
     groq_stt_model: str = _s("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+    grok_model: str = _s("GROK_MODEL", "grok-4.7")
     # provider:model pairs, tried in order when one is rate-limited.
     # Only Gemini models that are verified on the free tier are listed here.
     # gemini-3.8-flash is the current recommended flash model (gemini-2.0-flash retired).
@@ -157,10 +161,11 @@ class Config:
     def validate(self) -> list[str]:
         """Return a list of problems that would stop Jarvis from working."""
         problems: list[str] = []
-        if not self.gemini_api_key and not self.deepseek_api_key and not self.groq_api_key:
+        if (not self.gemini_api_key and not self.deepseek_api_key and not self.groq_api_key
+                and not self.grok_api_key):
             problems.append(
                 "no brain: set at least one of GEMINI_API_KEY, DEEPSEEK_API_KEY, "
-                "or GROQ_API_KEY in .env"
+                "GROQ_API_KEY or GROK_API_KEY in .env"
             )
         # Fish credentials are only required if the user explicitly selected the fish engine.
         if self.tts_engine.lower() == "fish":

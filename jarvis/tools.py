@@ -357,6 +357,21 @@ class Tools:
             _obj(name=_str("App or window name, e.g. terminal, powershell, cmd, chrome", True)),
             self._focus_app,
         ))
+        # Optional: only register once its handler exists, so a half-finished skill
+        # cannot stop the whole toolbelt (and Jarvis) from starting.
+        if hasattr(self, "_cloud"):
+            self.add(Tool(
+                "cloud",
+                "Use an Instabox Linux cloud box (name 'jarvis') for builds, installs, servers, long-running jobs, or anything needing Linux, Docker or to run off Windows. Screen/mic/keyboard/volume stay local.",
+                _obj(
+                    action=_str("exec|status|files|publish|ssh_cmd|start|stop", True),
+                    cmd=_str("Shell command for exec/ssh_cmd", False),
+                    port=_int("Port for publish (1-65535)", False, 1, 65535),
+                    name=_str("Box name (defaults to jarvis)", False),
+                    cwd=_str("Working dir in the box (default HOME)", False),
+                ),
+                self._cloud,
+            ))
 
     # ------------------------------------------------------------------ handlers
     def _open_app(self, app: str) -> str:
@@ -720,6 +735,70 @@ class Tools:
         from .skills import screen
         return screen.activate(name)
 
+    def _cloud(self, action: str, cmd: str = "", port: int = 0, name: str = "", cwd: str = "") -> str:
+        import subprocess, shutil
+
+        box = (name or "jarvis").strip()
+        act = (action or "").strip().lower()
+        exe = shutil.which("instabox") or r"C:\Users\Brian\AppData\Roaming\npm\instabox.cmd"
+        try:
+            if act == "status":
+                proc = subprocess.run([exe, "ls"], capture_output=True, text=True, timeout=60)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                if box in out and "Running" in out:
+                    return f"Box {box} is running."
+                return f"Box status:\n{out.strip()[:600]}"
+            if act == "start":
+                proc = subprocess.run([exe, "start", box], capture_output=True, text=True, timeout=300)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                return out.strip()[:600] or "Done."
+            if act == "stop":
+                proc = subprocess.run([exe, "stop", box], capture_output=True, text=True, timeout=300)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                return out.strip()[:600] or "Done."
+            if act == "files":
+                path = (cwd or cmd or "/data/home").strip()
+                proc = subprocess.run([exe, "files", box, path], capture_output=True, text=True, timeout=120)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                return out.strip()[:900]
+            if act == "publish":
+                if not port:
+                    return "Port number required, sir."
+                proc = subprocess.run([exe, "port", "publish", box, str(int(port))], capture_output=True, text=True, timeout=120)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                return out.strip()[:600]
+            if act == "exec":
+                if not cmd:
+                    return "Command required, sir."
+                args = [exe, "exec", box]
+                if cwd:
+                    args += ["--cwd", cwd]
+                args += ["--", cmd]
+                proc = subprocess.run(args, capture_output=True, text=True, timeout=610)
+                out = (proc.stdout or "").strip()
+                err = (proc.stderr or "").strip()
+                text = out or err or ""
+                if proc.returncode == 0:
+                    return f"Done. Output:\n{text[:900]}" if text else "Done, sir. Command completed successfully."
+                msg = text or f"exit code {proc.returncode}"
+                return f"Command failed ({proc.returncode}): {msg[:700]}"
+            if act == "ssh_cmd":
+                if not cmd:
+                    return "Command required, sir."
+                full = f"cd {cwd} && {cmd}" if cwd else cmd
+                proc = subprocess.run([exe, "ssh", box, "--", "bash", "-lc", full], capture_output=True, text=True, timeout=3600)
+                out = (proc.stdout or "").strip()
+                err = (proc.stderr or "").strip()
+                text = out or err or ""
+                if proc.returncode == 0:
+                    return f"Done. Output:\n{text[:900]}" if text else "Done, sir. Command completed successfully."
+                msg = text or f"exit code {proc.returncode}"
+                return f"Command failed ({proc.returncode}): {msg[:700]}"
+            return "Unknown action. Use exec, status, files, publish, ssh_cmd, start, or stop."
+        except subprocess.TimeoutExpired:
+            return "That box command timed out, sir. For long jobs use ssh_cmd or run in background."
+        except Exception as exc:  # noqa: BLE001
+            return f"I couldn't reach the box: {exc}"
 
 
 def _short(arguments: dict) -> str:

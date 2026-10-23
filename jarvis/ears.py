@@ -98,8 +98,12 @@ class Ears:
             pcm = np.clip(boosted * 32768.0, -32768, 32767).astype(np.int16)
         except Exception:  # noqa: BLE001
             pass
-        if self.whisper is not None and self.whisper.ready:
+        if self.whisper is not None:
             try:
+                # Load on demand. Falling through to a cloud recogniser because the model
+                # has not finished warming costs 30-60 s on a bad link for the same result.
+                if not self.whisper.ready:
+                    self.whisper.warm()
                 text = clean_transcript(self.whisper.transcribe(pcm, rate, fast=fast))
                 self.last_provider = f"whisper:{CONFIG.whisper_model}"
                 # Trust the local recogniser: if it ran and heard nothing, the clip really

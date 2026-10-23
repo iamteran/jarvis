@@ -173,11 +173,12 @@ class DeepSeek:
                         yield delta
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, *,
+             model: str | None = None,
              temperature: float = 0.7, max_output_tokens: int = 600,
              timeout: float = 90.0) -> dict:
         """Non-streaming completion with optional tool calling."""
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_output_tokens,
@@ -243,11 +244,12 @@ class Groq:
                         yield delta
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, *,
+             model: str | None = None,
              temperature: float = 0.7, max_output_tokens: int = 600,
              timeout: float = 90.0) -> dict:
         """Non-streaming completion with optional tool calling (OpenAI-compatible)."""
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_output_tokens,
@@ -275,6 +277,22 @@ class Groq:
         if response.status_code != 200:
             raise GeminiError(response.status_code, response.text[:300])
         return (response.json().get("text") or "").strip()
+
+
+class Grok(DeepSeek):
+    """Grok through an OpenAI-compatible gateway (default: https://api.openlux.ai/v1).
+
+    The gateway speaks the same wire format as DeepSeek and Groq, so it reuses those
+    methods and only swaps the host, key and model. Configure with GROK_API_KEY,
+    GROK_BASE_URL and GROK_MODEL.
+    """
+
+    BASE = "https://api.openlux.ai/v1"
+
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 base_url: str | None = None) -> None:
+        self.BASE = (base_url or CONFIG.grok_base_url or self.BASE).rstrip("/")
+        super().__init__(api_key or CONFIG.grok_api_key, model or CONFIG.grok_model)
 
 
 class Gemini:

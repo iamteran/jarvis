@@ -53,7 +53,13 @@ def cmd_check() -> int:
         print(f"  [{'ok  ' if ok else 'FAIL'}] {label:<26} {detail}")
 
     problems = CONFIG.validate()
-    report(not problems, "credentials", ", ".join(problems) or "Gemini + Fish keys present")
+    brains = [name for name, key in (
+        ("Grok", CONFIG.grok_api_key), ("Groq", CONFIG.groq_api_key),
+        ("DeepSeek", CONFIG.deepseek_api_key), ("Gemini", CONFIG.gemini_api_key),
+    ) if key]
+    report(not problems, "credentials",
+           ", ".join(problems) or f"brains: {', '.join(brains) or 'none'}; Fish key "
+                                  f"{'present' if CONFIG.fish_api_key else 'missing'}")
 
     # Brain (provider chain)
     try:
@@ -75,8 +81,10 @@ def cmd_check() -> int:
         t0 = time.perf_counter()
         ears.transcribe(silence, CONFIG.sample_rate)
         ms = (time.perf_counter() - t0) * 1000
-        provider = "groq" if ears.groq is not None else "gemini"
-        extra = f"{CONFIG.groq_stt_model}" if ears.groq is not None else f"{CONFIG.stt_model}"
+        provider = "whisper" if ears.whisper is not None else (
+            "groq" if ears.groq is not None else "gemini")
+        extra = (f"{CONFIG.whisper_model} (offline)" if ears.whisper is not None else
+                 f"{CONFIG.groq_stt_model}" if ears.groq is not None else f"{CONFIG.stt_model}")
         report(True, f"Ears ({provider})", f"{extra} reachable ({ms:.0f} ms)")
     except Exception as exc:  # noqa: BLE001
         report(False, "Ears", str(exc)[:120])
@@ -150,8 +158,8 @@ def cmd_check() -> int:
 
 def cmd_selftest(path: str) -> int:
     """Run the whole conversation pipeline on an audio file, no microphone needed."""
-    from .ai import Gemini
     from .brain.llm import Brain
+    from .ears import Ears
     from .tts.factory import make_tts
     from .tts.player import Player
     from .tts.speaker import Speaker
@@ -161,16 +169,18 @@ def cmd_selftest(path: str) -> int:
     pcm = load_audio_as_pcm16(path)
     print(f"  audio: {len(pcm) / CONFIG.sample_rate:.2f} s\n")
 
-    gemini = Gemini()
+    ears = Ears()
 
     t0 = time.perf_counter()
-    text = gemini.transcribe(pcm, CONFIG.sample_rate)
-    print(f"  [stt]  {(time.perf_counter() - t0) * 1000:5.0f} ms  heard: {text!r}")
+    text = ears.transcribe(pcm, CONFIG.sample_rate)
+    print(f"  [stt]  {(time.perf_counter() - t0) * 1000:5.0f} ms  "
+          f"({ears.last_provider or 'none'}) heard: {text!r}")
 
-    brain = Brain(gemini)
+    brain = Brain()
     t0 = time.perf_counter()
     reply = brain.reply(text or "Hello Jarvis, are you there?")
-    print(f"  [llm]  {(time.perf_counter() - t0) * 1000:5.0f} ms  reply: {reply!r}")
+    print(f"  [llm]  {(time.perf_counter() - t0) * 1000:5.0f} ms  "
+          f"({brain.last_model}) reply: {reply!r}")
 
     speaker = Speaker(make_tts(), Player())
     t0 = time.perf_counter()

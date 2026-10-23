@@ -18,7 +18,7 @@ import logging
 import time
 from typing import Iterator
 
-from ..ai import DeepSeek, Gemini, Groq, extract_text, function_calls, response_parts
+from ..ai import DeepSeek, Gemini, Grok, Groq, extract_text, function_calls, response_parts
 from ..config import CONFIG
 from ..memory import Memory
 from ..tools import Tools
@@ -31,7 +31,7 @@ MAX_TOOL_ROUNDS = 4
 
 class Brain:
     def __init__(self, gemini: Gemini | None = None, deepseek: DeepSeek | None = None,
-                 groq: Groq | None = None,
+                 groq: Groq | None = None, grok: Grok | None = None,
                  chain: tuple[tuple[str, str], ...] | None = None,
                  system: str | None = None, max_turns: int | None = None,
                  tools: Tools | None = None, memory: Memory | None = None) -> None:
@@ -42,6 +42,9 @@ class Brain:
         if groq is None and CONFIG.groq_api_key:
             groq = Groq()
         self.groq = groq
+        if grok is None and CONFIG.grok_api_key:
+            grok = Grok()
+        self.grok = grok
         self.chain = chain or CONFIG.llm_chain
         self.override_system = system
         self.max_turns = max_turns or CONFIG.max_history_turns
@@ -75,7 +78,9 @@ class Brain:
         """Providers that support OpenAI-style tool calling, in configured order."""
         providers: list[tuple[str, object, str]] = []
         for provider, model in self.chain:
-            if provider == "groq" and self.groq is not None:
+            if provider == "grok" and self.grok is not None:
+                providers.append((provider, self.grok, model))
+            elif provider == "groq" and self.groq is not None:
                 providers.append((provider, self.groq, model))
             elif provider == "deepseek" and self.deepseek is not None:
                 providers.append((provider, self.deepseek, model))
@@ -141,7 +146,7 @@ class Brain:
         messages.extend(self.messages[-self.max_turns * 2:])
         schemas = self.tools.schemas()
         for round_index in range(MAX_TOOL_ROUNDS):
-            data = client.chat(messages, tools=schemas, temperature=0.6,
+            data = client.chat(messages, tools=schemas, model=model, temperature=0.6,
                                max_output_tokens=500, timeout=CONFIG.llm_timeout)
             choices = data.get("choices") or []
             if not choices:
@@ -176,7 +181,8 @@ class Brain:
 
         # Ran out of tool rounds: ask for a one-line summary without further tools.
         try:
-            data = client.chat(messages, tools=None, temperature=0.4, max_output_tokens=160)
+            data = client.chat(messages, tools=None, model=model, temperature=0.4,
+                               max_output_tokens=160)
             return (data["choices"][0]["message"].get("content") or "Done, sir.").strip()
         except Exception:  # noqa: BLE001
             return "Done, sir."
@@ -290,10 +296,26 @@ class Brain:
         self._cooldown_until.pop(model, None)
 
     # ------------------------------------------------------------ text-only fallback
-    def _gemini_stream(self) -> Iterator[str]:
+    def _stream_providers(self) -> list[tuple[str, str, object]]:
+        """Every provider in the chain that can stream plain text, in configured order."""
+        providers: list[tuple[str, str, object]] = []
+        for provider, model in self.chain:
+            if provider == "gemini" and CONFIG.gemini_api_key:
+                providers.append((provider, model, self.gemini))
+            elif provider == "grok" and self.grok is not None:
+                providers.append((provider, model, self.grok))
+            elif provider == "groq" and self.groq is not None:
+                providers.append((provider, model, self.groq))
+            elif provider == "deepseek" and self.deepseek is not None:
+                providers.append((provider, model, self.deepseek))
+        if not providers and CONFIG.gemini_api_key:
+            providers.append(("gemini", CONFIG.chat_model, self.gemini))
+        return providers
+
+    def _stream_reply(self) -> Iterator[str]:
         # Only include clean user/assistant turns. Tool-call messages are in OpenAI
         # format (role=tool, tool_calls=[...]) which Gemini's API cannot parse.
-        # Filtering them keeps the conversation readable when we fall back from Groq.
+        # Filtering them keeps the conversation readable whichever provider answers.
         contents: list[dict] = []
         for message in self.messages:
             role = message.get("role")
@@ -311,12 +333,12 @@ class Brain:
             })
         system = self._system()
         last_error: Exception | None = None
-        for provider, model in self._text_providers():
+        for provider, model, client in self._stream_providers():
             if self._cooling(model):
                 continue
             try:
                 self.last_model = model
-                yield from self.gemini.stream_text(
+                yield from client.stream_text(
                     model, contents, system=system, temperature=0.75,
                     max_output_tokens=400, timeout=CONFIG.llm_timeout,
                 )
@@ -325,14 +347,14 @@ class Brain:
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 self._note_failure(model)
-                log.warning("gemini/%s failed (%s); trying next", model, exc)
+                log.warning("%s/%s failed (%s); trying next", provider, model, exc)
         if last_error is not None:
             raise last_error
 
     def reply(self, user_text: str) -> str:
         """Text-only answer, no tools (kept for simple callers and diagnostics)."""
         self.messages.append({"role": "user", "content": user_text})
-        text = "".join(self._gemini_stream()).strip()
+        text = "".join(self._stream_reply()).strip()
         self.messages.append({"role": "assistant", "content": text})
         self._trim()
         return text
