@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import webbrowser
@@ -15,7 +16,35 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import CONFIG, DATA
+from .config import CONFIG, DATA, ROOT
+
+from .config import CONFIG, DATA, ROOT
+
+from dotenv import set_key
+
+
+def _env_path() -> Path:
+    return ROOT / ".env"
+
+
+def _save_gmail_creds(address: str, password: str) -> tuple[bool, str]:
+    address = (address or "").strip()
+    password = (password or "").replace(" ", "").strip()
+    if not address or "@" not in address:
+        return False, "Enter a valid Gmail address."
+    if len(password) < 6:
+        return False, "Enter a valid App Password."
+    env = _env_path()
+    try:
+        env.touch(exist_ok=True)
+        set_key(str(env), "GMAIL_ADDRESS", address, quote_mode="never")
+        set_key(str(env), "GMAIL_APP_PASSWORD", password, quote_mode="never")
+        os.environ["GMAIL_ADDRESS"] = address
+        os.environ["GMAIL_APP_PASSWORD"] = password
+        return True, "Connected."
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Could not save: {exc}"
+
 
 log = logging.getLogger("webui")
 
@@ -183,6 +212,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True, "message": message})
             return
+        if parsed.path == "/api/email/test":
+            from . import email_client
+            ok, detail = email_client.probe()
+            self._json({"ok": ok, "detail": detail})
+            return
         self._json({"error": "not found"}, 404)
 
     # ---------------------------------------------------------------------- POST
@@ -202,6 +236,22 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             ok, message = save_draft(original, str(payload.get("body") or ""))
             self._json({"ok": ok, "message": message}, 200 if ok else 400)
+            return
+        if parsed.path == "/api/email/connect":
+            payload = self._body()
+            address = str(payload.get("address") or "").strip()
+            password = str(payload.get("password") or "")
+            from . import email_client
+
+            test_ok, detail = email_client.test_credentials(address, password)
+            if not test_ok:
+                self._json({"ok": False, "message": detail}, 400)
+                return
+            ok, message = _save_gmail_creds(address, password)
+            if not ok:
+                self._json({"ok": False, "message": message}, 400)
+                return
+            self._json({"ok": True, "message": detail})
             return
         self._json({"error": "not found"}, 404)
 

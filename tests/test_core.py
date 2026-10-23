@@ -351,6 +351,78 @@ class TestSpeakerCleaning(unittest.TestCase):
         self.assertNotIn("#", result)
 
 
+class TestGmailSetup(unittest.TestCase):
+    def test_save_credentials_preserves_other_env_lines(self) -> None:
+        import pathlib
+        import tempfile
+
+        from jarvis import webui
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / ".env").write_text("GEMINI_API_KEY=keepme\n", encoding="utf-8")
+        old_root = webui.ROOT
+        webui.ROOT = root
+        try:
+            ok, message = webui._save_gmail_creds("me@gmail.com", "abcd efgh ijkl mnop")
+            self.assertTrue(ok, message)
+            text = (root / ".env").read_text(encoding="utf-8")
+            self.assertIn("GEMINI_API_KEY=keepme", text)
+            self.assertIn("GMAIL_ADDRESS=me@gmail.com", text)
+            self.assertIn("GMAIL_APP_PASSWORD=abcdefghijklmnop", text)
+        finally:
+            webui.ROOT = old_root
+            import os
+
+            os.environ.pop("GMAIL_ADDRESS", None)
+            os.environ.pop("GMAIL_APP_PASSWORD", None)
+
+    def test_invalid_address_is_rejected_without_writing(self) -> None:
+        import pathlib
+        import tempfile
+
+        from jarvis import webui
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / ".env").write_text("KEEP=1\n", encoding="utf-8")
+        old_root = webui.ROOT
+        webui.ROOT = root
+        try:
+            ok, _message = webui._save_gmail_creds("not-an-address", "abcdefgh")
+            self.assertFalse(ok)
+            self.assertNotIn("GMAIL_ADDRESS", (root / ".env").read_text(encoding="utf-8"))
+        finally:
+            webui.ROOT = old_root
+
+
+class TestEmailDraft(unittest.TestCase):
+    def test_reply_is_threaded_and_not_sent(self) -> None:
+        from jarvis.email_client import build_draft
+
+        original = {
+            "from": "Mum <mum@example.com>",
+            "from_addr": "mum@example.com",
+            "subject": "Dinner",
+            "message_id": "<abc@example.com>",
+            "references": "",
+        }
+        message = build_draft(original, "I'll be there at seven.")
+        self.assertEqual(message["To"], "mum@example.com")
+        self.assertEqual(message["Subject"], "Re: Dinner")
+        self.assertEqual(message["In-Reply-To"], "<abc@example.com>")
+        self.assertIn("I'll be there at seven.", message.get_content())
+
+
+class TestPulse(unittest.TestCase):
+    def test_snapshot_shape(self) -> None:
+        from jarvis.skills import pulse
+
+        snap = pulse.snapshot()
+        for key in ("battery", "cpu", "memory", "disk", "uptime", "windows", "recent"):
+            self.assertIn(key, snap)
+        self.assertIn("percent", snap["cpu"])
+        self.assertIsInstance(snap["recent"], list)
+
+
 class TestYouTubeSearch(unittest.TestCase):
     def test_first_video_id_from_nested_json(self) -> None:
         from jarvis.skills.youtube import _first_video_id

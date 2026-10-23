@@ -69,6 +69,18 @@
   /* inbox */
   .inbox{flex:1.25;display:flex;flex-direction:column}
   .inbox .scroll{flex:1;margin:-2px -4px -2px 0;padding-right:4px}
+  .connect{display:flex;flex-direction:column;gap:7px;padding:2px 2px 4px}
+  .connect-row{display:flex;gap:6px}
+  .connect input{flex:1;min-width:0;background:rgba(0,20,32,.7);border:1px solid rgba(0,212,255,.2);
+    color:#eafcff;font-family:var(--sans);font-size:11.5px;padding:8px 9px;border-radius:2px}
+  .connect input:focus{outline:none;border-color:rgba(0,212,255,.55)}
+  .connect button{background:rgba(0,212,255,.14);border:1px solid rgba(0,212,255,.45);color:var(--cyan);
+    border-radius:2px;padding:0 11px;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;cursor:pointer}
+  .connect button:hover{background:rgba(0,212,255,.28);color:#fff}
+  .connect .help{font-size:10px;color:var(--muted);line-height:1.5}
+  .connect .help a{color:var(--cyan);text-decoration:none}
+  .acct{background:none;border:0;color:var(--muted);cursor:pointer;font-size:11px;padding:0 2px}
+  .acct:hover{color:var(--cyan)}
   .mail{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:9px;align-items:start;
     padding:9px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent;
     transition:background .15s,border-color .15s}
@@ -245,8 +257,16 @@
   <!-- LEFT: inbox + plans -->
   <section class="col">
     <article class="panel inbox">
-      <div class="panel-title"><span>Inbox</span><span class="count" id="mail-count">0</span></div>
-      <div class="scroll" id="inbox"><div class="empty">Reading Gmail…</div></div>
+      <div class="panel-title"><span>Inbox</span><span><span class="count" id="mail-count">—</span> <button class="acct" id="gmail-toggle" title="Change Gmail account">⚙</button></span></div>
+      <div id="gmail-connect" class="connect">
+        <div class="connect-row">
+          <input id="gmail-address" type="email" placeholder="you@gmail.com" autocomplete="email"/>
+          <input id="gmail-pass" type="password" placeholder="App Password" autocomplete="off"/>
+          <button id="gmail-save">CONNECT</button>
+        </div>
+        <div class="help">Use a Google App Password (2FA required). Create one at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>. Saved to <code>.env</code>, draft-only.</div>
+      </div>
+      <div class="scroll" id="inbox"><div class="empty">Checking…</div></div>
     </article>
     <article class="panel today">
       <div class="panel-title"><span>Today</span><span class="count" id="plan-count">0</span></div>
@@ -332,6 +352,7 @@
   const $ = (id) => document.getElementById(id);
   let currentUid = null;
   let busy = false;
+  let showConnect = false;
   const logLines = [];
 
   const shortSender = (value) => {
@@ -371,26 +392,34 @@
   // ------------------------------------------------------------------- rendering
   function renderInbox(email) {
     const box = $("inbox");
+    const connect = $("gmail-connect");
+    const count = $("mail-count");
     box.replaceChildren();
     const messages = email.messages || [];
-    $("mail-count").textContent = messages.length;
     if (!email.configured) {
-      const wrap = el("div", "setup");
-      wrap.innerHTML = "Gmail is not connected yet.<br>Add these to <code>.env</code>, then restart Jarvis:" +
-        "<ol><li><code>GMAIL_ADDRESS=you@gmail.com</code></li>" +
-        "<li><code>GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx</code></li></ol>" +
-        "<p style='margin-top:8px'>Create the app password at " +
-        "<a href='https://myaccount.google.com/apppasswords' target='_blank' rel='noreferrer'>myaccount.google.com/apppasswords</a> " +
-        "(2-Step Verification must be on).</p>";
+      showConnect = true;
+      connect.style.display = "flex";
+      if (email.address && !$("gmail-address").value) $("gmail-address").value = email.address;
+      count.textContent = "OFF";
+      count.className = "count warn";
+      const wrap = el("div", "empty");
+      wrap.textContent = "Sign in with your Gmail App Password to read mail and save drafts.";
       box.append(wrap);
       return;
     }
-    if (email.error) {
+    connect.style.display = showConnect ? "flex" : "none";
+    count.textContent = String(messages.length);
+    count.className = "count";
+    if (email.unread) { count.textContent = messages.length + " · " + email.unread + " unread"; count.className = "count ok"; }
+    if (email.error && !messages.length) {
+      connect.style.display = "flex";
+      if (email.address && !$("gmail-address").value) $("gmail-address").value = email.address;
+      count.className = "count bad";
       box.append(el("div", "empty", email.error));
       return;
     }
     if (!messages.length) {
-      box.append(el("div", "empty", "No email today, sir. A rare gift."));
+      box.append(el("div", "empty", "No email today, sir."));
       return;
     }
     for (const mail of messages) {
@@ -603,6 +632,31 @@
     }
   }
 
+  // ------------------------------------------------------------------- gmail login
+  async function connectGmail() {
+    const address = $("gmail-address").value.trim();
+    const password = $("gmail-pass").value.trim();
+    if (!address || !password) { toast("Enter both address and app password.", true); return; }
+    const btn = $("gmail-save");
+    btn.disabled = true;
+    btn.textContent = "TESTING…";
+    try {
+      const response = await fetch("/api/email/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, password }),
+      });
+      const data = await response.json();
+      toast(data.message || (data.ok ? "Connected" : "Failed"), !data.ok);
+      if (data.ok) { $("gmail-pass").value = ""; showConnect = false; load(); }
+    } catch (error) {
+      toast("Failed: " + error, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "CONNECT";
+    }
+  }
+
   // ------------------------------------------------------------------- loop
   async function load() {
     try {
@@ -627,6 +681,12 @@
   });
   $("m-close").addEventListener("click", closeModal);
   $("m-save").addEventListener("click", saveDraft);
+  $("gmail-save").addEventListener("click", connectGmail);
+  $("gmail-toggle").addEventListener("click", () => {
+    showConnect = true;
+    $("gmail-connect").style.display = "flex";
+    $("gmail-address").focus();
+  });
   $("modal").addEventListener("click", (event) => { if (event.target === $("modal")) closeModal(); });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeModal();
@@ -634,6 +694,12 @@
       event.preventDefault();
       saveDraft();
     }
+  });
+  $("gmail-pass").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); connectGmail(); }
+  });
+  $("gmail-address").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); $("gmail-pass").focus(); }
   });
 
   tickClock();

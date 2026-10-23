@@ -9,6 +9,7 @@ from __future__ import annotations
 import email
 import imaplib
 import logging
+import os
 import re
 import threading
 import time
@@ -35,12 +36,17 @@ _last_error = ""
 
 
 def configured() -> bool:
-    return bool(CONFIG.gmail_address and CONFIG.gmail_app_password)
+    return bool(_address() and _password())
+
+
+def _address() -> str:
+    return (os.environ.get("GMAIL_ADDRESS") or CONFIG.gmail_address or "").strip()
 
 
 def _password() -> str:
     # Google displays app passwords in groups of four; the spaces are not part of it.
-    return (CONFIG.gmail_app_password or "").replace(" ", "")
+    value = os.environ.get("GMAIL_APP_PASSWORD") or CONFIG.gmail_app_password or ""
+    return value.replace(" ", "").strip()
 
 
 def _decode_header(value: str | None) -> str:
@@ -62,7 +68,7 @@ def _sender_address(value: str) -> str:
 
 def _connect() -> imaplib.IMAP4_SSL:
     conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=_TIMEOUT_S)
-    conn.login(CONFIG.gmail_address, _password())
+    conn.login(_address(), _password())
     return conn
 
 
@@ -268,7 +274,7 @@ def build_draft(original: dict[str, Any], body: str) -> EmailMessage:
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
     message = EmailMessage()
-    message["From"] = CONFIG.gmail_address
+    message["From"] = _address()
     message["To"] = to
     message["Subject"] = subject
     message["Date"] = formatdate(localtime=True)
@@ -384,11 +390,12 @@ def _short_sender(value: str) -> str:
 def summary_state(limit: int = 8) -> dict[str, Any]:
     """Everything the dashboard needs in one call (cached)."""
     if not configured():
-        return {"configured": False, "messages": [], "unread": 0, "error": ""}
+        return {"configured": False, "address": _address(),
+                "messages": [], "unread": 0, "error": ""}
     mails = messages(limit=limit, today=True)
     return {
         "configured": True,
-        "address": CONFIG.gmail_address,
+        "address": _address(),
         "messages": mails,
         "unread": sum(1 for mail in mails if mail.get("unread")),
         "error": (f"Could not reach Gmail: {_last_error}" if _last_error else ""),
@@ -399,12 +406,32 @@ def probe() -> tuple[bool, str]:
     """Login once, for --check. Never fetches mail."""
     if not configured():
         return True, "not configured (optional: add GMAIL_ADDRESS + GMAIL_APP_PASSWORD)"
+    return test_credentials(_address(), _password())
+
+
+def test_credentials(address: str, password: str) -> tuple[bool, str]:
+    """Try a login without changing anything. Used by the dashboard sign-in form."""
+    address = (address or "").strip()
+    password = (password or "").replace(" ", "").strip()
+    if not address or "@" not in address:
+        return False, "Enter a valid Gmail address."
+    if not password:
+        return False, "Enter the App Password."
     conn = None
     try:
-        conn = _connect()
-        return True, f"{CONFIG.gmail_address} reachable"
+        conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=_TIMEOUT_S)
+        conn.login(address, password)
+        return True, f"{address} connected."
+    except imaplib.IMAP4.error as exc:
+        text = str(exc)
+        if "AUTHENTICATIONFAILED" in text or "Invalid credentials" in text:
+            return False, ("Gmail rejected that App Password. Check that 2-Step Verification "
+                           "is on and that you used the 16-character App Password.")
+        if "Application-specific password required" in text:
+            return False, "Google requires an App Password for this account (2-Step Verification)."
+        return False, f"Gmail login failed: {text[:110]}"
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)[:110]
+        return False, f"Could not reach Gmail: {exc}"
     finally:
         if conn is not None:
             try:

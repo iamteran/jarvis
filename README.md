@@ -4,8 +4,9 @@ A voice assistant that lives on this laptop. Say **"Hey Jarvis"**, talk normally
 answers out loud — and it can act on the machine: open apps and sites, change volume, lock
 the screen, tell the time.
 
-**Status: Phases 1–2 complete, Phase 3 mostly done — voice loop, desktop control, 41-tool
-model-driven toolbelt, persistent memory, Grok vision, files, reminders and a spoken safety gate.**
+**Status: Phases 1-2 complete, Phase 3 mostly done - voice loop, desktop control, 45-tool
+model-driven toolbelt, persistent memory, Grok vision, files, reminders, Gmail drafts and a
+live local dashboard.**
 
 ### What Jarvis can do right now
 
@@ -187,6 +188,39 @@ A local calendar (SQLite) — no OAuth, works offline:
 
 Events are announced ~90 seconds before they start, and today's schedule is part of the
 start-up briefing.
+
+## Command centre (dashboard)
+
+A live local HUD at **http://127.0.0.1:8765/** (bound to loopback only — email never
+leaves this machine on the LAN):
+
+- **Inbox** — today's Gmail, unread markers, click to read, reply box that saves a draft.
+- **Today** — local calendar events and pending reminders, merged by time.
+- **System Pulse** — battery/charging, CPU, RAM, disk, uptime, open windows and recent
+  files from Downloads/Desktop/Documents.
+- **Command box** — typed commands go through the same fast router and Grok brain as voice.
+- The orb shows live state and the server starts with Jarvis; `--dashboard` opens it (or
+  reuses the running instance's server).
+
+## Gmail (App Password, draft-only)
+
+Sign in from the dashboard's Inbox panel, or add to `.env`:
+
+```env
+GMAIL_ADDRESS=you@gmail.com
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+```
+
+2-Step Verification must be on; create the App Password at
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Jarvis reads
+over IMAP and **never sends**: "reply saying ..." appends a message to Gmail's Drafts folder
+with `\Draft`, where you press Send yourself.
+
+| Say | What happens |
+|---|---|
+| "do I have any gmails today" | reads today's count, senders and subjects |
+| "read the email from mum" | reads the full text aloud |
+| "reply saying I'll be there at seven" | saves that reply as a Gmail draft |
 
 ## Tests
 
