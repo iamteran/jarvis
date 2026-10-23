@@ -62,8 +62,10 @@ def _is_generic_title(title: str) -> bool:
     return title.strip().lower().rstrip(".") in _GENERIC_TITLES
 
 # Compound "open X and search/play Y" — the most common way people actually ask.
+# "chrome" is deliberately absent: "open chrome and search youtube" is two actions, not a
+# search *of* Chrome, and the compound handler below gets both right.
 SITE_SEARCH_RE = re.compile(
-    r"^(?:open|go to|launch)\s+(?P<site>youtube| google|chrome)\s+and\s+"
+    r"^(?:open|go to|launch)\s+(?P<site>youtube|google)\s+and\s+"
     r"(?:search|play|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s*$", re.I)
 PLAY_RE = re.compile(r"^(?:play|put on|start playing)\s+(?P<query>.+?)(?:\s+on youtube)?\s*$", re.I)
 SEARCH_ON_RE = re.compile(
@@ -117,6 +119,10 @@ class Router:
         if not raw:
             return False, ""
         clean = raw.rstrip(" .!?")
+
+        # Whisper sometimes hears "search" as "such" ("open chrome and such YouTube").
+        # Repair it only in the command slot after "and", so ordinary uses are untouched.
+        clean = re.sub(r"\band\s+such\b(?=\s+\S)", "and search", clean, flags=re.I)
 
         # ---- calendar (before "open ...", which would treat phrases as app names) ----
         if SCHEDULE_TODAY_RE.search(clean):
@@ -183,18 +189,25 @@ class Router:
             if query and len(query) > 1:
                 return True, self._site_search("youtube", query)
 
-        # Compound requests: "open chrome and search youtube" should do both.
+        # Compound requests: "open chrome and search youtube" should do both. Each clause
+        # is handled on its own; if one is unclear we still report the ones that ran.
+        # The old all-or-nothing version threw away a successful launch, then tried to
+        # open the whole sentence as an app — which is how Chrome opened and Jarvis
+        # simultaneously denied it.
         if re.search(r"\sand\s|\sthen\s|;", clean, re.I):
             pieces = [p.strip(" ,.") for p in re.split(r"\s+and(?:\s+then)?\s+|\s+then\s+|\s*;\s*", clean, flags=re.I) if p.strip(" ,.")]
             if len(pieces) > 1:
                 replies: list[str] = []
+                missed: list[str] = []
                 for piece in pieces[:3]:
                     handled_piece, reply_piece = self.handle(piece)
-                    if not handled_piece:
-                        replies = []
-                        break
-                    replies.append(reply_piece)
+                    if handled_piece:
+                        replies.append(reply_piece)
+                    else:
+                        missed.append(piece)
                 if replies:
+                    if missed:
+                        replies.append("I didn't catch " + " or ".join(missed) + ", sir.")
                     return True, " ".join(replies)
 
         # "open the desktop" is not an app — it means minimise everything.
@@ -204,6 +217,10 @@ class Router:
         match = OPEN_RE.match(clean)
         if match:
             target = match.group("target").strip()
+            # A multi-clause sentence is not an app name. If compound handling above gave
+            # up, let the brain deal with it instead of fuzzy-matching the whole phrase.
+            if re.search(r"\s(?:and|then)\s", target, re.I):
+                return False, ""
             if self._looks_like_site(target):
                 return True, self.apps.open_site(target)[1]
             ok, reply = self.apps.launch_app(target)
