@@ -100,10 +100,10 @@ def build_state() -> dict[str, Any]:
         log.debug("reminder state failed: %s", exc)
         reminders = []
     try:
-        inbox = summary_state()
+        inbox = summary_state(fast=True)
     except Exception as exc:  # noqa: BLE001
         log.debug("email state failed: %s", exc)
-        inbox = {"configured": False, "messages": [], "unread": 0, "error": str(exc)}
+        inbox = {"configured": False, "messages": [], "total": 0, "unread": 0, "error": str(exc)}
     try:
         system = pulse.snapshot()
     except Exception as exc:  # noqa: BLE001
@@ -251,6 +251,8 @@ class _Handler(BaseHTTPRequestHandler):
             if not ok:
                 self._json({"ok": False, "message": message}, 400)
                 return
+            email_client.reset_cache()
+            email_client.warm()
             self._json({"ok": True, "message": detail})
             return
         self._json({"error": "not found"}, 404)
@@ -274,6 +276,12 @@ def start(port: int | None = None) -> ThreadingHTTPServer | None:
                                       daemon=True)
     _server_thread.start()
     log.info("dashboard on http://127.0.0.1:%s/", chosen)
+    try:
+        from .email_client import warm as warm_email
+
+        warm_email()
+    except Exception as exc:  # noqa: BLE001 - email is optional
+        log.debug("email warm-up skipped: %s", exc)
     return server
 
 

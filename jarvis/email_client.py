@@ -30,6 +30,8 @@ _lock = threading.Lock()
 _cache: dict[str, Any] = {"at": 0.0, "data": None}
 _CACHE_TTL_S = 30.0
 _counts_cache: dict[str, Any] = {"at": 0.0, "total": 0, "unread": 0}
+_warm_lock = threading.Lock()
+_warming = False
 
 # The last list we handed out, so "reply to that email" knows which message it means.
 _last_messages: list[dict[str, Any]] = []
@@ -420,16 +422,85 @@ def _short_sender(value: str) -> str:
     return name or _sender_address(value) or "someone"
 
 
-def summary_state(limit: int = 8) -> dict[str, Any]:
-    """Everything the dashboard needs in one call (cached)."""
+def reset_cache() -> None:
+    """Forget inbox snapshots (after signing in to a different account)."""
+    global _last_error
+    with _lock:
+        _cache.update({"at": 0.0, "data": None})
+        _counts_cache.update({"at": 0.0, "total": 0, "unread": 0})
+        _last_error = ""
+
+
+def _cached_messages(limit: int) -> tuple[list[dict[str, Any]], float]:
+    """Whatever is cached for this preview size, plus its age in seconds."""
+    key = f"{limit}:True:False"
+    with _lock:
+        data = _cache.get("data") or {}
+        if data.get("key") != key:
+            return [], 1e9
+        return list(data.get("messages") or []), time.time() - float(_cache.get("at") or 0)
+
+
+def _cached_counts() -> tuple[int, int, float]:
+    with _lock:
+        if not _counts_cache.get("at"):
+            return 0, 0, 1e9
+        return (int(_counts_cache["total"]), int(_counts_cache["unread"]),
+                time.time() - float(_counts_cache["at"]))
+
+
+def warm() -> None:
+    """Refresh inbox caches off the request thread (dashboard polls)."""
+    global _warming
+    if not configured():
+        return
+    with _warm_lock:
+        if _warming:
+            return
+        _warming = True
+
+    def run() -> None:
+        global _warming
+        try:
+            messages(limit=8, today=True, force=True)
+            today_counts(force=True)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("inbox warm failed: %s", exc)
+        finally:
+            with _warm_lock:
+                _warming = False
+
+    threading.Thread(target=run, name="email-warm", daemon=True).start()
+
+
+def summary_state(limit: int = 8, fast: bool = False) -> dict[str, Any]:
+    """Everything the dashboard needs in one call (cached).
+
+    `fast` never waits on Gmail when a previous snapshot exists: it serves that
+    snapshot and refreshes in the background, so a 5 s dashboard poll cannot
+    queue up 15 s IMAP round-trips.
+    """
     if not configured():
         return {"configured": False, "address": _address(),
                 "messages": [], "total": 0, "unread": 0, "error": ""}
-    mails = messages(limit=limit, today=True)
-    total, unread = today_counts()
-    if not total:
-        total = len(mails)
-        unread = sum(1 for mail in mails if mail.get("unread"))
+    if fast:
+        mails, mail_age = _cached_messages(limit)
+        total, unread, count_age = _cached_counts()
+        if mail_age > _CACHE_TTL_S or count_age > _CACHE_TTL_S:
+            warm()
+        if not mails:
+            mails = messages(limit=limit, today=True)
+        if count_age > 1e8:
+            total, unread = today_counts()
+        if not total:
+            total = len(mails)
+            unread = sum(1 for mail in mails if mail.get("unread"))
+    else:
+        mails = messages(limit=limit, today=True)
+        total, unread = today_counts()
+        if not total:
+            total = len(mails)
+            unread = sum(1 for mail in mails if mail.get("unread"))
     return {
         "configured": True,
         "address": _address(),
