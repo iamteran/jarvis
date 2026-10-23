@@ -330,6 +330,33 @@ class Tools:
                  target=_str("What it actually refers to, e.g. an absolute path", True)),
             self._set_alias,
         ))
+        self.add(Tool(
+            "run_command",
+            "Run a shell command on Windows to diagnose or fix an issue. Use when the user says 'run this', 'fix this', or you need to execute a command to solve a problem shown on screen.",
+            _obj(command=_str("The exact command to run, e.g. ipconfig /all, winget --version, sfc /scannow", True),
+                 shell=_str("Shell to use: cmd, powershell, or pwsh. Defaults to cmd.", False),
+                 cwd=_str("Optional working directory", False)),
+            self._run_command,
+        ))
+        self.add(Tool(
+            "run_in_terminal",
+            "Open Windows Terminal/Command Prompt/PowerShell and run a command there so the user can see output. Best for long-running fixes.",
+            _obj(command=_str("Command to run in the terminal", True),
+                 shell=_str("cmd, powershell, or wt. Defaults to powershell.", False)),
+            self._run_in_terminal,
+        ))
+        self.add(Tool(
+            "type_and_enter",
+            "Type text into the focused window and press Enter. Great for running commands in a terminal or filling and submitting forms.",
+            _obj(text=_str("Text to type", True)),
+            self._type_and_enter,
+        ))
+        self.add(Tool(
+            "focus_app",
+            "Focus/bring an app window to the front by name.",
+            _obj(name=_str("App or window name, e.g. terminal, powershell, cmd, chrome", True)),
+            self._focus_app,
+        ))
 
     # ------------------------------------------------------------------ handlers
     def _open_app(self, app: str) -> str:
@@ -625,6 +652,73 @@ class Tools:
 
         Memory().set_alias(name.strip(), target.strip())
         return f"Noted, sir. When you say \"{name}\", I'll understand you mean {target}."
+
+    def _run_command(self, command: str, shell: str = "cmd", cwd: str = "") -> str:
+        from . import safety
+
+        cmd_lower = (command or "").lower()
+        dangerous = ["shutdown", "restart", "rmdir /s", "del /s", "format", "diskpart", "bcdedit", "reg delete", "cipher /w", "takeown /f"]
+        if any(d in cmd_lower for d in dangerous):
+            def _do() -> str:
+                return self._run_command_internal(command, shell, cwd)
+            return safety.request("run a potentially destructive command", f"Command: {command}", _do)
+        return self._run_command_internal(command, shell, cwd)
+
+    def _run_command_internal(self, command: str, shell: str = "cmd", cwd: str = "") -> str:
+        try:
+            shell_l = (shell or "cmd").lower()
+            if shell_l in ("powershell", "pwsh", "ps"):
+                exe = "powershell.exe" if shell_l == "powershell" else "pwsh.exe"
+                args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
+                proc = subprocess.run([exe] + args, cwd=cwd or None, capture_output=True, text=True, timeout=300)
+            elif shell_l == "cmd":
+                proc = subprocess.run(["cmd", "/c", command], cwd=cwd or None, capture_output=True, text=True, timeout=300)
+            else:
+                proc = subprocess.run(command, cwd=cwd or None, shell=True, capture_output=True, text=True, timeout=300)
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            if proc.returncode == 0:
+                if out:
+                    return f"Done. Output:\n{out[:800]}"
+                return "Done, sir. Command completed successfully."
+            msg = err or out or f"exit code {proc.returncode}"
+            return f"Command failed ({proc.returncode}): {msg[:600]}"
+        except subprocess.TimeoutExpired:
+            return "That command is taking longer than expected, sir. It may still be running in the background."
+        except Exception as exc:  # noqa: BLE001
+            return f"I couldn't run that command: {exc}"
+
+    def _run_in_terminal(self, command: str, shell: str = "powershell") -> str:
+        try:
+            shell_l = (shell or "powershell").lower()
+            if shell_l in ("wt", "terminal"):
+                subprocess.Popen(["wt", "new-tab", "powershell", "-NoExit", "-Command", command])
+                return f"Opened Windows Terminal and running: {command}, sir."
+            elif shell_l in ("powershell", "pwsh"):
+                exe = "powershell.exe" if shell_l == "powershell" else "pwsh.exe"
+                subprocess.Popen([exe, "-NoExit", "-Command", command])
+                return f"Opened PowerShell and running: {command}, sir."
+            else:
+                subprocess.Popen(["cmd", "/k", command])
+                return f"Opened Command Prompt and running: {command}, sir."
+        except Exception as exc:  # noqa: BLE001
+            return f"I couldn't open a terminal: {exc}"
+
+    def _type_and_enter(self, text: str) -> str:
+        try:
+            from pynput.keyboard import Controller
+            Controller().type(text)
+            time.sleep(0.1)
+            from pynput.keyboard import Key
+            Controller().press(Key.enter)
+            Controller().release(Key.enter)
+            return f"Typed and sent: {text}, sir."
+        except Exception as exc:  # noqa: BLE001
+            return f"I couldn't type: {exc}"
+
+    def _focus_app(self, name: str) -> str:
+        from .skills import screen
+        return screen.activate(name)
 
 
 

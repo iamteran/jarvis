@@ -76,7 +76,12 @@ def system_prompt(user_title: str = "sir", memory_context: str = "") -> str:
         f"{memory_block}"
         "Tools: you have a full toolbelt for acting on this machine \u2014 opening apps and sites, "
         "reading and clicking windows, typing, controlling volume, reading and managing files, "
-        "setting reminders, managing a calendar, and capturing vision from the screen. "
+        "setting reminders, managing a calendar, capturing vision from the screen, running shell commands, "
+        "and using a terminal. "
+        "BE PROACTIVE: if the user says 'do something', 'fix this', 'solve this', 'check the issue on my screen', "
+        "'type...', 'run a command', or wants something fixed, FIRST look at the screen with look_at_screen or read_screen, "
+        "then take concrete actions using the tools. Do NOT just explain \u2014 ACT immediately. "
+        "Use run_command for quick fixes, run_in_terminal + type_and_enter for interactive work. "
         "When the user asks for something a tool can handle, call it rather than describing it. "
         "After acting, confirm in one short spoken sentence what you did.\n"
     )
