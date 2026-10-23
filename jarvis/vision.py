@@ -16,17 +16,10 @@ import base64
 import io
 import logging
 
-from .ai import Gemini, extract_text
-from .config import ASSETS, CONFIG
+from .ai import Gemini, Grok, extract_text
+from .config import CONFIG
 
 log = logging.getLogger("vision")
-
-# Fastest first. Each model has its own daily free quota, so a 429 rolls to the next.
-VISION_MODELS = (
-    "gemini-3-flash-preview",
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-)
 
 MAX_EDGE = 1024
 JPEG_QUALITY = 82
@@ -79,26 +72,39 @@ def describe(question: str, png: bytes | None = None) -> str:
         log.warning("screen capture failed: %s", exc)
         return "I couldn't capture the screen, sir."
 
-    encoded = base64.b64encode(image).decode("ascii")
-    contents = [{
-        "role": "user",
-        "parts": [
-            {"text": f"{PROMPT}\n\nQuestion: {question}"},
-            {"inlineData": {"mimeType": "image/jpeg", "data": encoded}},
-        ],
-    }]
-    gemini = Gemini()
-    for model in VISION_MODELS:
+    prompt = f"{PROMPT}\n\nQuestion: {question}"
+    for provider, model in CONFIG.vision_chain:
         try:
-            data = gemini.generate(model, contents, temperature=0.4,
-                                   max_output_tokens=450, timeout=90)
-            text = extract_text(data).strip()
+            if provider == "grok":
+                if not CONFIG.grok_api_key:
+                    continue
+                text = Grok().describe_image(
+                    model, image, prompt, temperature=0.4,
+                    max_output_tokens=450, timeout=90,
+                )
+            elif provider == "gemini":
+                if not CONFIG.gemini_api_key:
+                    continue
+                encoded = base64.b64encode(image).decode("ascii")
+                contents = [{
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {"inlineData": {"mimeType": "image/jpeg", "data": encoded}},
+                    ],
+                }]
+                data = Gemini().generate(model, contents, temperature=0.4,
+                                         max_output_tokens=450, timeout=90)
+                text = extract_text(data).strip()
+            else:
+                continue
             if text:
-                log.info("vision via %s (%d KB screenshot)", model, len(image) // 1024)
+                log.info("vision via %s/%s (%d KB screenshot)",
+                         provider, model, len(image) // 1024)
                 return text
-            log.debug("vision model %s returned nothing", model)
+            log.debug("vision %s/%s returned nothing", provider, model)
         except Exception as exc:  # noqa: BLE001 - quota, network, unsupported model
-            log.info("vision via %s failed: %s", model, exc)
+            log.info("vision via %s/%s failed: %s", provider, model, exc)
     return "I'm afraid I couldn't make sense of the screen just now, sir."
 
 

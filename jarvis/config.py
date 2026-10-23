@@ -85,6 +85,15 @@ class Config:
             "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-1.5-flash-latest,gemini-1.5-flash-8b",
         ).split(",") if m.strip()
     )
+    # Vision (screenshots): provider:model pairs, tried in order. Grok's gateway accepts
+    # OpenAI-style image messages, so vision no longer depends on the Gemini link.
+    vision_chain: tuple[tuple[str, str], ...] = tuple(
+        (part.split(":", 1)[0].strip(), part.split(":", 1)[1].strip())
+        for part in _s("JARVIS_VISION_CHAIN",
+                       "grok:grok-4.7,gemini:gemini-3-flash-preview,"
+                       "gemini:gemini-3.5-flash-lite").split(",")
+        if ":" in part
+    )
     # Local Whisper (needs `pip install faster-whisper`). "auto" uses it when importable.
     # Two models: a bigger one for accuracy on real commands, a tiny one for the quick
     # "did they say Jarvis?" checks on idle speech (where speed matters and accuracy does not).

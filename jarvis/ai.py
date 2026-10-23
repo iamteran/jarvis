@@ -294,6 +294,32 @@ class Grok(DeepSeek):
         self.BASE = (base_url or CONFIG.grok_base_url or self.BASE).rstrip("/")
         super().__init__(api_key or CONFIG.grok_api_key, model or CONFIG.grok_model)
 
+    def describe_image(self, model: str, image: bytes, question: str, *,
+                       mime: str = "image/jpeg", temperature: float = 0.4,
+                       max_output_tokens: int = 450, timeout: float = 90.0) -> str:
+        """Answer `question` about an image (OpenAI vision message format)."""
+        data_uri = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
+        payload: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            }],
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+        }
+        response = self.http.post(f"{self.BASE}/chat/completions", json=payload,
+                                  timeout=timeout)
+        if response.status_code != 200:
+            raise GeminiError(response.status_code, response.text[:300])
+        choices = response.json().get("choices") or []
+        if not choices:
+            return ""
+        return ((choices[0].get("message") or {}).get("content") or "").strip()
+
 
 class Gemini:
     def __init__(self, api_key: str | None = None) -> None:

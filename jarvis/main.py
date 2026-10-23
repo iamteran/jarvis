@@ -89,6 +89,29 @@ def cmd_check() -> int:
     except Exception as exc:  # noqa: BLE001
         report(False, "Ears", str(exc)[:120])
 
+    # Vision (synthetic image, so --check never uploads your screen)
+    try:
+        import io
+
+        from PIL import Image, ImageDraw
+
+        from . import vision
+
+        image = Image.new("RGB", (320, 120), "white")
+        ImageDraw.Draw(image).text((24, 48), "JARVIS 42", fill="black")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=85)
+        provider = next((f"{p}/{m}" for p, m in CONFIG.vision_chain
+                         if (p == "grok" and CONFIG.grok_api_key)
+                         or (p == "gemini" and CONFIG.gemini_api_key)), "none")
+        t0 = time.perf_counter()
+        answer = vision.describe("What number is written in this image?",
+                                 buffer.getvalue())
+        ms = (time.perf_counter() - t0) * 1000
+        report("42" in answer, f"Vision ({provider})", f"{answer[:48]!r} ({ms:.0f} ms)")
+    except Exception as exc:  # noqa: BLE001
+        report(False, "Vision", str(exc)[:120])
+
     # Voice
     try:
         from .tts.factory import make_tts

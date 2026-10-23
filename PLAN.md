@@ -3,6 +3,28 @@
 **Project home:** `C:\Users\Brian\jarvis` · **Owner:** Brian ("Teran") · **Status:** Phases 1–2 complete, 3 in progress (tools, memory, vision, safety, files, reminders)
 **Target machine:** this laptop (Windows, i5-5300U, 8 GB RAM, no GPU)
 
+> **Build log — round 5 (23 Oct 2026). Grok brain + Grok vision.**
+>
+> The Gemini endpoint had become unusable from this laptop: every request died with
+> `SSL: UNEXPECTED_EOF_WHILE_READING`, and the retry ladder turned one turn into 105 s.
+> Jarvis now runs on **Grok (`grok-4.7`) through an OpenAI-compatible gateway**:
+>
+> - New `Grok` client (`GROK_API_KEY`, `GROK_BASE_URL`, `GROK_MODEL`); chain is
+>   `grok:grok-4.7` first, Gemini last resort. Tool calling, the follow-up tool round and
+>   streaming all verified against the live gateway (4–5 s per leg).
+> - Fixed a real bug found while wiring it: `chat()` ignored the model supplied by the
+>   chain, so `provider:model` silently used the client default.
+> - **Vision moved off Gemini too** — the gateway accepts OpenAI image messages, so
+>   screenshots go through `JARVIS_VISION_CHAIN` (Grok first). Verified by describing the
+>   live desktop and by reading a synthetic test image.
+> - Hearing stays local: Whisper now loads on demand instead of falling through to a
+>   30–60 s cloud retry when the model has not finished warming.
+> - Diagnostics tell the truth: `--check` reports the actual brain/ears/vision providers,
+>   and checks vision with a synthetic image so it never uploads the screen.
+>
+> Measured: brain 4.9–7.2 s per turn, vision 4.5 s (small) / 13 s (full screen),
+> local hearing ~2 s, 29 tests green, `--check` all green.
+
 > **Build log — round 2 (21 Oct 2026, evening).**
 >
 > **Hearing fixed for good.** Local Whisper (`tiny.en`) transcribes offline in ~2 s. Three

@@ -4,8 +4,8 @@ A voice assistant that lives on this laptop. Say **"Hey Jarvis"**, talk normally
 answers out loud — and it can act on the machine: open apps and sites, change volume, lock
 the screen, tell the time.
 
-**Status: Phases 1–2 complete, Phase 3 mostly done — voice loop, desktop control, 30-tool
-model-driven toolbelt, persistent memory, vision, files, reminders and a spoken safety gate.**
+**Status: Phases 1–2 complete, Phase 3 mostly done — voice loop, desktop control, 41-tool
+model-driven toolbelt, persistent memory, Grok vision, files, reminders and a spoken safety gate.**
 
 ### What Jarvis can do right now
 
@@ -86,13 +86,11 @@ These are real numbers from this machine, not estimates.
 | Offline voice (SAPI) | **0.15–1.3 s** | in-process COM, no network |
 | **Hearing (local Whisper)** | **~2.0 s** | 5.8 s clip → 2.0 s, offline, unlimited |
 | Window listing | **65 ms** | Win32 EnumWindows (was 18 s via UIA) |
-| Brain with tools (DeepSeek) | 4–8 s | one extra round trip when it calls a tool |
-| Ears (Gemini flash, fallback) | 6–13 s | each model has its own 20/day quota |
+| Brain with tools (Grok `grok-4.7`) | 4–8 s | one extra round trip when it calls a tool |
+| Vision (Grok screenshot) | ~4 s small image, ~13 s full screen | one capture, one question |
+| Ears (Gemini flash, fallback only) | 6–13 s | each model has its own 20/day quota |
 | Fish Audio (your cloned voice) | ~14 s | working key, slow on a ~50 KB/s link |
 | edge-tts (British neural) | 1.4–2 s healthy, 25–40 s congested | |
-| Ears (Gemini `gemini-3.8-flash`) | **unavailable** | 20 requests/day free limit exhausted; resets daily |
-| Fish Audio (your cloned voice) | ~14 s | working key, but slow on a ~50 KB/s link |
-| edge-tts (British neural) | 1.4–2 s when healthy, 25–40 s when congested | |
 
 **The bottleneck is the internet connection (~50 KB/s), not the code.** Conversation
 quality is therefore gated by the cloud round trip.
@@ -129,6 +127,7 @@ Whisper is the better default here.
 | `GROK_MODEL` | `grok-4.7` | Grok model name |
 | `GEMINI_API_KEY` | — | ears + backup brain |
 | `JARVIS_LLM_CHAIN` | `grok:grok-4.7,gemini:gemini-3.5-flash-lite,gemini:gemini-3.5-flash` | provider:model order; missing keys are skipped |
+| `JARVIS_VISION_CHAIN` | `grok:grok-4.7,gemini:gemini-3-flash-preview` | screenshot provider:model order |
 | `JARVIS_STT_MODEL` | `gemini-3.5-flash` | Gemini speech-to-text (fallback `gemini-3.6-flash`) |
 | `JARVIS_TTS` | `sapi` | `sapi` offline · `edge` nicer British voice · `fish` your clone · `auto` edge→sapi |
 | `JARVIS_EDGE_VOICE` | `en-GB-RyanNeural` | edge-tts voice |
@@ -193,7 +192,7 @@ start-up briefing.
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-23 tests covering date parsing, calendar, routing, confirmation safety, memory, reminders,
+29 tests covering date parsing, calendar, routing, confirmation safety, memory, reminders,
 transcript cleaning and the Whisper normaliser. They run in under a second and use a
 private temporary database — your real memory is never touched.
 
@@ -234,8 +233,9 @@ Design notes that matter:
 - **Fast commands never touch the network**, which is why "open Chrome" works even when
   the connection is down.
 - **One instance only** (named Windows mutex) — two Jarvis instances would fight over the mic.
-- **Tools are safe by construction**: the toolbelt has no delete, no shutdown, no shell.
-  Destructive actions will arrive behind a spoken confirmation gate.
+- **Tools are gated, not guessed**: delete, close-app, shutdown and destructive shell
+  commands ask out loud first, and the yes/no token comes from the interface — never from
+  the model. Everything else (open, type, click, read, remember) runs directly.
 
 ## Project layout
 
