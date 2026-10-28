@@ -1,18 +1,42 @@
-"""Logging: readable console output plus a rotating file, with a tiny timing helper."""
+"""Logging: readable console output plus a rotating file, with a tiny timing helper.
+Supports both human-readable and structured JSON logging.
+"""
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from .config import LOGS
+from .config import CONFIG, LOGS
 
 _CONFIGURED = False
 
 
-def setup(level: str = "INFO", debug: bool = False) -> None:
+class JsonFormatter(logging.Formatter):
+    """JSON log formatter for structured logging."""
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        # Add extra fields if present
+        for key, value in record.__dict__.items():
+            if key not in ("name", "msg", "args", "created", "filename", "funcName",
+                          "levelname", "levelno", "lineno", "module", "msecs",
+                          "message", "pathname", "process", "processName", "relativeCreated",
+                          "thread", "threadName", "exc_info", "exc_text", "stack_info"):
+                payload[key] = value
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def setup(level: str = "INFO", debug: bool = False, json_logs: bool = False) -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
@@ -20,17 +44,29 @@ def setup(level: str = "INFO", debug: bool = False) -> None:
     root = logging.getLogger()
     root.setLevel(lvl)
 
-    fmt = logging.Formatter("%(asctime)s  %(levelname)-7s %(name)-18s %(message)s", "%H:%M:%S")
+    # Human-readable format for console
+    console_fmt = logging.Formatter("%(asctime)s  %(levelname)-7s %(name)-18s %(message)s", "%H:%M:%S")
 
     console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
+    console.setFormatter(console_fmt)
     root.addHandler(console)
+
+    # File handler with optional JSON format
+    file_fmt = JsonFormatter(datefmt="%H:%M:%S") if json_logs else console_fmt
 
     file_handler = RotatingFileHandler(
         Path(LOGS) / "jarvis.log", maxBytes=1_500_000, backupCount=3, encoding="utf-8"
     )
-    file_handler.setFormatter(fmt)
+    file_handler.setFormatter(file_fmt)
     root.addHandler(file_handler)
+
+    # Also add a JSON-only rotating file for structured analysis
+    if json_logs:
+        json_handler = RotatingFileHandler(
+            Path(LOGS) / "jarvis.jsonl", maxBytes=1_500_000, backupCount=3, encoding="utf-8"
+        )
+        json_handler.setFormatter(JsonFormatter(datefmt="%H:%M:%S"))
+        root.addHandler(json_handler)
 
     # keep noisy libraries quiet
     for noisy in ("urllib3", "PIL", "pystray", "openwakeword"):

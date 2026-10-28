@@ -189,6 +189,31 @@ class Config:
     hotkey_panic: str = _s("JARVIS_HOTKEY_PANIC", "<ctrl>+<alt>+<esc>")
     hotkey_mute: str = _s("JARVIS_HOTKEY_MUTE", "<ctrl>+<alt>+j")
 
+    # ---- task queue ----
+    task_queue_max_concurrent: int = _i("JARVIS_TASK_QUEUE_MAX_CONCURRENT", 2)
+    task_queue_retry_attempts: int = _i("JARVIS_TASK_QUEUE_RETRY_ATTEMPTS", 3)
+    task_queue_retry_backoff: float = _f("JARVIS_TASK_QUEUE_RETRY_BACKOFF", 2.0)
+
+    # ---- health monitoring ----
+    health_check_interval: int = _i("JARVIS_HEALTH_CHECK_INTERVAL", 30)
+    watchdog_max_restarts: int = _i("JARVIS_WATCHDOG_MAX_RESTARTS", 3)
+    watchdog_restart_window: int = _i("JARVIS_WATCHDOG_RESTART_WINDOW", 300)
+
+    # ---- skills ----
+    skills_dir: str = _s("JARVIS_SKILLS_DIR", "data/skills")
+    skill_sandbox: bool = _s("JARVIS_SKILL_SANDBOX", "1").lower() not in ("0", "false", "no")
+
+    # ---- knowledge vault ----
+    knowledge_paths: str = _s("JARVIS_KNOWLEDGE_PATHS", "Documents,Downloads,Desktop")
+    knowledge_exclude: str = _s("JARVIS_KNOWLEDGE_EXCLUDE", ".git,__pycache__,node_modules,.venv")
+    knowledge_embeddings: bool = _s("JARVIS_KNOWLEDGE_EMBEDDINGS", "0").lower() not in ("0", "false", "no")
+
+    # ---- permissions ----
+    permission_mode: str = _s("JARVIS_PERMISSION_MODE", "interactive")  # interactive | auto-approve-low | dry-run
+
+    # ---- logging ----
+    json_logs: bool = _s("JARVIS_JSON_LOGS", "0").lower() not in ("0", "false", "no")
+
     def validate(self) -> list[str]:
         """Return a list of problems that would stop Jarvis from working."""
         problems: list[str] = []

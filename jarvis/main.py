@@ -451,6 +451,45 @@ def cmd_run(show_orb: bool) -> int:
     return 0
 
 
+def cmd_health() -> int:
+    """Comprehensive health check — runs all diagnostics and reports via voice if running."""
+    _banner()
+    print("  Running comprehensive health check...\n")
+
+    # Run the full check suite
+    failures = cmd_check()
+
+    # If Jarvis is running, also speak the result
+    from .config import DATA
+    import json
+
+    health_path = DATA / "health.json"
+    if health_path.exists():
+        try:
+            data = json.loads(health_path.read_text(encoding="utf-8"))
+            import psutil
+            alive = psutil.pid_exists(int(data.get("pid", 0)))
+        except Exception:
+            alive = False
+
+        if alive:
+            from .tts.factory import make_tts
+            from .tts.player import Player
+            from .tts.speaker import Speaker
+
+            if failures == 0:
+                msg = "All systems nominal, sir. Every check passed."
+            else:
+                msg = f"Health check complete with {failures} issue{'s' if failures != 1 else ''}, sir. Check the console for details."
+
+            try:
+                Speaker(make_tts(), Player()).say(msg)
+            except Exception:
+                pass
+
+    return failures
+
+
 def cmd_status() -> int:
     """Is Jarvis running, and how healthy is it? Reads the heartbeat the app writes."""
     import json
@@ -531,13 +570,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory", action="store_true", help="show what Jarvis remembers")
     parser.add_argument("--autostart", choices=["on", "off"], help="start Jarvis with Windows")
     parser.add_argument("--status", action="store_true", help="show whether Jarvis is running and healthy")
+    parser.add_argument("--health", action="store_true", help="run comprehensive health check (diagnostics + voice)")
     parser.add_argument("--say", metavar="TEXT", help="send typed text through the same path as speech")
     parser.add_argument("--dashboard", action="store_true", help="open the live command centre")
     parser.add_argument("--no-orb", action="store_true", help="run without the floating orb")
     parser.add_argument("--debug", action="store_true", help="verbose logging")
     args = parser.parse_args(argv)
 
-    jarvis_log.setup(debug=args.debug)
+    jarvis_log.setup(debug=args.debug, json_logs=CONFIG.json_logs)
 
     if args.devices:
         return cmd_devices()
@@ -559,6 +599,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_autostart(args.autostart == "on")
     if args.status:
         return cmd_status()
+    if args.health:
+        return cmd_health()
     if args.say:
         return cmd_say(args.say)
     if args.dashboard:

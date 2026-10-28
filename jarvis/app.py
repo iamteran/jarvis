@@ -38,6 +38,7 @@ from .tts.factory import make_tts
 from .tts.fish import TTSError
 from .tts.player import Player
 from .tts.speaker import Speaker
+from .task_queue import init_task_system, get_task_worker, create_task, TaskPriority
 
 log = logging.getLogger("jarvis")
 
@@ -189,6 +190,11 @@ class Jarvis:
                 self.telegram.start()
                 # Expose send_file to tools so they can send files via Telegram
                 self.brain.tools._telegram_bridge = self.telegram
+
+            # Initialize task queue and worker
+            self._task_worker = init_task_system(progress_callback=self._task_progress)
+            self._register_task_actions()
+
             self._watchdog = threading.Thread(target=self._watchdog_loop, name="watchdog",
                                               daemon=True)
             self._watchdog.start()
@@ -243,6 +249,68 @@ class Jarvis:
             self._speak(briefing_text())
         except Exception as exc:  # noqa: BLE001
             log.warning("briefing failed: %s", exc)
+
+    # ------------------------------------------------------------------ task queue
+    def _task_progress(self, task) -> None:
+        """Progress callback for task queue — sends updates via voice and Telegram."""
+        try:
+            # Voice announcement for significant progress milestones
+            if task.progress >= 1.0 and task.state.value == "completed":
+                msg = f"Task {task.name} completed, sir."
+                if self.state in (State.IDLE, State.FOLLOWUP):
+                    self._announce(msg)
+            elif task.state.value == "failed":
+                msg = f"Task {task.name} failed: {task.error}"
+                if self.state in (State.IDLE, State.FOLLOWUP):
+                    self._announce(msg)
+
+            # Telegram notification
+            if self.telegram is not None:
+                if task.progress >= 1.0 and task.state.value == "completed":
+                    self.telegram.send_message(f"✅ {task.name} completed")
+                elif task.state.value == "failed":
+                    self.telegram.send_message(f"❌ {task.name} failed: {task.error}")
+                elif task.state.value == "waiting_approval":
+                    self.telegram.send_message(
+                        f"⏳ {task.name} requires approval: {task.approval_prompt}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("task progress callback failed: %s", exc)
+
+    def _register_task_actions(self) -> None:
+        """Register actions that tasks can execute."""
+        worker = get_task_worker()
+
+        # Video download action
+        def download_video(url: str, progress_callback=None):
+            from .video_downloader import VideoDownloader
+            downloader = VideoDownloader(progress_callback=progress_callback)
+            return downloader.download(url)
+
+        worker.register_action("video_downloader.download", download_video)
+
+        # Instagram publish action
+        def publish_instagram(video_path: str, caption: str = "", progress_callback=None):
+            from .instagram_publisher import InstagramPublisher
+            publisher = InstagramPublisher()
+            return publisher.publish(video_path, caption)
+
+        worker.register_action("instagram_publisher.publish", publish_instagram)
+
+        # WhatsApp publish action
+        def publish_whatsapp(video_path: str, caption: str = "", progress_callback=None):
+            from .whatsapp_publisher import publish_whatsapp_status
+            return publish_whatsapp_status(video_path, caption)
+
+        worker.register_action("whatsapp_publisher.publish", publish_whatsapp)
+
+        # Generic command execution
+        def run_command(command: str, progress_callback=None):
+            import subprocess
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+            return {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode}
+
+        worker.register_action("system.run_command", run_command)
 
     # ------------------------------------------------------------------ watchdog
     def _watchdog_loop(self) -> None:
@@ -329,6 +397,11 @@ class Jarvis:
             self.speaker.stop()
         except Exception:  # noqa: BLE001
             pass
+        if hasattr(self, '_task_worker') and self._task_worker is not None:
+            try:
+                self._task_worker.stop()
+            except Exception:  # noqa: BLE001
+                pass
         if self._hotkeys is not None:
             try:
                 self._hotkeys.stop()
@@ -440,12 +513,21 @@ class Jarvis:
         if state is State.SPEAKING:
             if not CONFIG.barge_in:
                 return
-            # Never interrupt for arbitrary speech or echo: only an actual wake word.
+            # Check for wake word barge-in
             if self.wake is not None and self.wake.detect(block):
                 log.info("barge-in by wake word")
                 self.speaker.stop()
                 self._start_turn()
                 self._begin_listening(followup=True)
+                return
+            # Also check for general user speech (not just wake word) for barge-in
+            # Use VAD to detect speech and echo guard to filter out our own TTS output
+            if self.vad.is_speech(block) and self.echo.is_user_speech(samples, CONFIG.sample_rate, level):
+                log.info("barge-in by user speech")
+                self.speaker.stop()
+                self._start_turn()
+                self._begin_listening(followup=True)
+                return
             return
 
         # Wake word while idle, thinking or in the follow-up window.
