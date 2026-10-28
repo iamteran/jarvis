@@ -56,6 +56,7 @@ class State(str, Enum):
     BOOTING = "booting"
     IDLE = "idle"
     LISTENING = "listening"
+    TRANSCRIBING = "transcribing"
     THINKING = "thinking"
     SPEAKING = "speaking"
     FOLLOWUP = "followup"
@@ -80,9 +81,12 @@ class Jarvis:
         self._asr_capture = False
         self._wake_check_busy = False
         self._wake_cooldown_until = 0.0
+        self._wake_word_not_before = 0.0
         self._speaking_since = 0.0
         self._busy = False
         self.echo = EchoGuard()
+        from .activity import ActivityLog
+        self.activity = ActivityLog()
 
         self.hub: AudioHub | None = None
         self.vad = EnergyVAD()
@@ -92,14 +96,17 @@ class Jarvis:
         self.brain = Brain(self.gemini)
         self.router = Router()
         self.tts = make_tts()
+        self._transcribe_lock = threading.Lock()
         self.player = Player()
         self.speaker = Speaker(self.tts, self.player)
 
         self.show_orb = CONFIG.show_orb if show_orb is None else show_orb
-        self.greeting = (CONFIG.show_orb and True) if greeting is None else greeting
+        self.greeting = True if greeting is None else greeting
         self.orb = None
         self.tray = None
         self.reminders: ReminderService | None = None
+        self.telegram = None
+        self._brain_lock = threading.Lock()
         self._started_ts = time.time()
         self._last_block_ts = time.time()
         self._last_turn_ts = 0.0
@@ -142,13 +149,24 @@ class Jarvis:
             threading.Thread(target=self._warm_voice, name="tts-warm", daemon=True).start()
             threading.Thread(target=self.ears.warm, name="ears-warm", daemon=True).start()
             threading.Thread(target=self._warm_desktop, name="uia-warm", daemon=True).start()
-            self.wake = WakeWord(CONFIG.wake_model, CONFIG.wake_threshold, CONFIG.wake_frames)
+            if CONFIG.wake_word_enabled:
+                self.wake = WakeWord(CONFIG.wake_model, CONFIG.wake_threshold, CONFIG.wake_frames)
+            else:
+                self.wake = None
+                log.info("wake-word detection disabled by config; hotkey listening remains available")
+            from .audio.capture import describe_input_devices
+            for device in describe_input_devices():
+                log.info("available input device: %s", device)
             self.hub = AudioHub()
             self.hub.start()
+            log.info("selected microphone: %s (index %s)",
+                     self.hub.device_name, self.hub.device_index)
             self._audio_thread = threading.Thread(target=self._audio_loop, name="audio", daemon=True)
             self._audio_thread.start()
             self._set_state(State.IDLE)
-            log.info("Jarvis online — say 'Hey Jarvis' or press Ctrl+Space")
+            log.info("Jarvis online — %s",
+                     "say 'Hey Jarvis' or press Ctrl+Space" if self.wake
+                     else "press Ctrl+Space to listen")
             try:
                 from .webui import start as start_dashboard
 
@@ -160,6 +178,17 @@ class Jarvis:
             # Wire the live reminder service into the tool layer so that LLM-triggered
             # reminders are seen by the same background polling thread that fires them.
             self.brain.tools._reminder_service = self.reminders
+            if CONFIG.telegram_bot_token:
+                from .telegram_bridge import TelegramBridge
+
+                self.telegram = TelegramBridge(
+                    CONFIG.telegram_bot_token,
+                    CONFIG.telegram_allowed_user_id,
+                    self._handle_telegram_message,
+                )
+                self.telegram.start()
+                # Expose send_file to tools so they can send files via Telegram
+                self.brain.tools._telegram_bridge = self.telegram
             self._watchdog = threading.Thread(target=self._watchdog_loop, name="watchdog",
                                               daemon=True)
             self._watchdog.start()
@@ -286,6 +315,8 @@ class Jarvis:
             return
         log.info("shutting down (requested by: %s)", reason)
         self._stop.set()
+        if self.telegram is not None:
+            self.telegram.stop()
         try:
             from .webui import stop as stop_dashboard
 
@@ -327,6 +358,10 @@ class Jarvis:
         if self.tray is not None:
             self.tray.set_state(state.value)
         log.debug("state -> %s", state.value)
+        try:
+            self.activity.record("state", state.value)
+        except Exception:
+            pass
 
     def _start_turn(self) -> int:
         with self._state_lock:
@@ -378,13 +413,24 @@ class Jarvis:
                     self._last_block_ts = time.monotonic()
                     if not self.muted:
                         self._handle_block(block)
+                # A PortAudio stream can stop without raising from get_block (for
+                # example, if another app grabs the device). Watch it independently
+                # of queue timeouts so the listener doesn't silently stay dead.
+                if self.hub is not None and not self.hub.running:
+                    log.warning("microphone stream is inactive; reopening it")
+                    self.hub.restart()
                 self._expire_followup()
             except Exception:  # noqa: BLE001 - the audio thread must never die
-                log.exception("audio loop error (continuing)")
+                log.exception("audio loop error; listener remains active")
+                try:
+                    if self.hub is not None and not self.hub.running:
+                        log.warning("microphone stream is closed; reopening it")
+                        self.hub.restart()
+                except Exception:
+                    log.exception("microphone stream restart failed; retrying")
+                self._stop.wait(0.25)
 
     def _handle_block(self, block: np.ndarray) -> None:
-        if self.wake is None:
-            return
         state = self.state
         samples = block.astype(np.float32) / 32768.0
         level = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
@@ -394,22 +440,19 @@ class Jarvis:
         if state is State.SPEAKING:
             if not CONFIG.barge_in:
                 return
-            if self.echo.is_user_speech(samples, CONFIG.sample_rate, level):
-                self._barge_hits += 1
-                if self._barge_hits >= self.echo.required_blocks:
-                    log.info("barge-in by voice (echo %.2f, floor %.2f)",
-                             self.echo.last_similarity, self.echo.floor)
-                    self._barge_hits = 0
-                    self.speaker.stop()
-                    self._start_turn()
-                    self._begin_listening(followup=True)
-            else:
-                self._barge_hits = 0
+            # Never interrupt for arbitrary speech or echo: only an actual wake word.
+            if self.wake is not None and self.wake.detect(block):
+                log.info("barge-in by wake word")
+                self.speaker.stop()
+                self._start_turn()
+                self._begin_listening(followup=True)
             return
 
         # Wake word while idle, thinking or in the follow-up window.
         if state is not State.LISTENING:
-            if self.wake.detect(block):
+            if (self.wake is not None
+                    and time.monotonic() >= self._wake_word_not_before
+                    and self.wake.detect(block)):
                 if state in (State.THINKING, State.SPEAKING):
                     log.info("barge-in by wake word")
                     self.speaker.stop()
@@ -449,13 +492,14 @@ class Jarvis:
                 self._followup_hits = 0
 
     def _begin_listening(self, followup: bool = False, asr_wake: bool = False) -> None:
-        if self._stop.is_set() or self.wake is None or self.hub is None:
+        if self._stop.is_set() or self.hub is None:
             return
         with self._listen_lock:
-            if self.state is State.LISTENING:
+            if self.state in (State.LISTENING, State.TRANSCRIBING):
                 return
             self._followup_deadline = 0.0
-            self.wake.reset()
+            if self.wake is not None:
+                self.wake.reset()
             self.hub.flush()
             turn = self._start_turn()
             self._turn_at_listen = turn
@@ -478,6 +522,7 @@ class Jarvis:
             if not rec.usable:
                 self._set_state(State.IDLE)
                 return
+            self._set_state(State.TRANSCRIBING)
             threading.Thread(target=self._check_asr_wake,
                              args=(rec.audio(), getattr(self, "_turn_at_listen", 0)),
                              name="asr-wake", daemon=True).start()
@@ -486,8 +531,8 @@ class Jarvis:
         if not rec.usable:
             log.info("no speech after wake (peak %.4f)", rec.peak)
             if rec.peak >= CONFIG.salvage_peak:
-                # heard *something* (quiet mic) — transcribe it rather than apologising
                 audio = rec.audio()
+                self._set_state(State.TRANSCRIBING)
                 threading.Thread(target=self._respond,
                                  args=(audio, getattr(self, "_turn_at_listen", 0)),
                                  name="turn", daemon=True).start()
@@ -496,6 +541,7 @@ class Jarvis:
             return
         audio = rec.audio()
         log.debug("utterance: %.2fs, peak %.3f", len(audio) / CONFIG.sample_rate, rec.peak)
+        self._set_state(State.TRANSCRIBING)
         threading.Thread(target=self._respond, args=(audio, getattr(self, "_turn_at_listen", 0)),
                          name="turn", daemon=True).start()
 
@@ -508,15 +554,16 @@ class Jarvis:
     # --------------------------------------------------------------------- a turn
     def _respond(self, audio: np.ndarray, turn: int) -> None:
         self._last_turn_ts = time.time()
-        self._set_state(State.THINKING)
         try:
-            with Timer("stt", log):
-                text = self.ears.transcribe(audio, CONFIG.sample_rate)
+            with self._transcribe_lock:
+                with Timer("stt", log):
+                    text = self.ears.transcribe(audio, CONFIG.sample_rate)
         except Exception as exc:  # noqa: BLE001 - network, quota, or timeout
             log.error("transcription failed: %s", exc)
             self._speak("Forgive me, sir. My connection is struggling; I didn't catch that.",
                         turn=turn)
             return
+        self._set_state(State.THINKING)
         text = (text or "").strip()
         if not text:
             log.warning("empty transcription")
@@ -529,6 +576,10 @@ class Jarvis:
         commands, then the model with its tools."""
         try:
             log.info("USER : %s", text)
+            try:
+                self.activity.record("user", text)
+            except Exception:
+                pass
 
             if text.lower().strip(" .!?") in STOP_WORDS:
                 log.info("user asked to stop")
@@ -553,12 +604,18 @@ class Jarvis:
 
             try:
                 with Timer("llm", log):
-                    reply, actions = self.brain.respond(text)
+                    with self._brain_lock:
+                        reply, actions = self.brain.respond(text)
                 for action in actions:
                     log.info("ACTION: %s", action)
             except Exception as exc:  # noqa: BLE001 - slow or congested network
                 log.error("brain failed: %s", exc)
-                self._speak("Forgive me, sir. The network is delaying my thoughts.", turn=turn)
+                # Check if it's a quota/network error vs other error
+                err_text = str(exc).lower()
+                if any(k in err_text for k in ("quota", "rate limit", "429", "403", "insufficient")):
+                    self._speak("Forgive me, sir. All my cloud providers are at capacity. I can still help with local commands like opening apps, checking the time, or controlling volume.", turn=turn)
+                else:
+                    self._speak("Forgive me, sir. Something went wrong with my thinking process.", turn=turn)
                 return
             if not self._turn_is_current(turn):
                 log.debug("turn superseded before speaking")
@@ -566,6 +623,10 @@ class Jarvis:
             if not reply:
                 reply = "I'm not quite sure what to say to that, sir."
             log.info("JARVIS: %s", reply)
+            try:
+                self.activity.record("assistant", reply)
+            except Exception:
+                pass
 
             self._speak(reply, turn=turn)
         except (GeminiError, TTSError, RuntimeError) as exc:
@@ -574,6 +635,15 @@ class Jarvis:
         except Exception as exc:  # noqa: BLE001 - a turn must never kill the app
             log.exception("unexpected turn failure: %s", exc)
             self._fail_softly(turn)
+
+    def _handle_telegram_message(self, text: str) -> str:
+        """Run a private, allowlisted Telegram command through Jarvis's normal brain/tools."""
+        log.info("Telegram command received from the configured owner")
+        with self._brain_lock:
+            reply, actions = self.brain.respond(text)
+        for action in actions:
+            log.info("TELEGRAM ACTION: %s", action)
+        return reply or "I couldn't produce a reply, sir."
 
     # ------------------------------------------------------------- always-ready mode
     def _whisper_ready(self) -> bool:
@@ -588,8 +658,9 @@ class Jarvis:
             # Only the first few seconds matter for the name, and greedy decoding is enough.
             # This keeps idle listening cheap on a two-core machine.
             snippet = audio[: CONFIG.sample_rate * 5 // 2]   # 2.5 s is plenty for a name
-            with Timer("wake-stt", log):
-                text = self.ears.transcribe(snippet, CONFIG.sample_rate, fast=True)
+            with self._transcribe_lock:
+                with Timer("wake-stt", log):
+                    text = self.ears.transcribe(snippet, CONFIG.sample_rate, fast=True)
             text = (text or "").strip()
             if not self._turn_is_current(turn):
                 return
@@ -646,8 +717,13 @@ class Jarvis:
             return
         if finished:
             self._set_state(State.FOLLOWUP)
+            self._wake_word_not_before = (
+                time.monotonic() + CONFIG.tts_cooldown_ms / 1000.0
+            )
             self._followup_deadline = time.monotonic() + CONFIG.followup_ms / 1000
-            self._followup_ignore_until = time.monotonic() + 0.35   # let the tail drain
+            self._followup_ignore_until = (
+                time.monotonic() + CONFIG.tts_cooldown_ms / 1000.0
+            )
             self._followup_hits = 0
             log.debug("follow-up window open for %d ms", CONFIG.followup_ms)
         else:

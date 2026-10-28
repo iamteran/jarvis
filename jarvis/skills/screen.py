@@ -10,6 +10,8 @@ Idea adapted from FatihMakes/Mark-LVI (CC BY-NC 4.0, non-commercial).
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import time
 import warnings
 
@@ -192,6 +194,15 @@ def type_text(text: str) -> str:
     """Type into whatever window currently has focus."""
     if not text:
         return "What would you like me to type, sir?"
+    focused = _foreground()
+    if focused is not None:
+        try:
+            title = (focused.window_text() or "").strip()
+            if title.casefold().endswith("notepad"):
+                ok, detail = type_in_notepad(text)
+                return detail if ok else f"I couldn't verify the Notepad typing: {detail}"
+        except Exception:  # noqa: BLE001 - continue with the generic focused-window path
+            pass
     try:
         from pynput.keyboard import Controller
     except Exception:  # noqa: BLE001
@@ -203,6 +214,83 @@ def type_text(text: str) -> str:
     except Exception as exc:  # noqa: BLE001
         log.debug("type failed: %s", exc)
         return "I couldn't type that, sir."
+
+
+def type_in_notepad(text: str, timeout_s: float = 10.0) -> tuple[bool, str]:
+    """Launch Notepad, focus its confirmed window, type, and verify the UIA readback."""
+    if not text:
+        return False, "No text was supplied; nothing was typed."
+
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    fallback = os.path.join(windir, "System32", "notepad.exe")
+
+    def find_notepad():
+        try:
+            for window in _desktop().windows():
+                title = (window.window_text() or "").strip()
+                if title.casefold().endswith("notepad"):
+                    return window
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Notepad window enumeration failed: %s", exc)
+        return None
+
+    window = find_notepad()
+    if window is None:
+        try:
+            subprocess.Popen(["notepad.exe"])
+        except Exception as first_error:  # noqa: BLE001
+            log.info("notepad.exe launch failed; trying %s: %s", fallback, first_error)
+            try:
+                subprocess.Popen([fallback])
+            except Exception as exc:  # noqa: BLE001
+                return False, f"Notepad launch failed: {exc}"
+
+    deadline = time.monotonic() + timeout_s
+    while window is None and time.monotonic() < deadline:
+        time.sleep(0.2)
+        window = find_notepad()
+    if window is None:
+        return False, "Notepad window was not found; no text was typed."
+
+    title = (window.window_text() or "").strip()
+    if not title.casefold().endswith("notepad"):
+        return False, f"Refusing to type: the selected window is not Notepad ({title!r})."
+    try:
+        window.set_focus()
+        time.sleep(0.2)
+        import ctypes
+
+        if int(ctypes.windll.user32.GetForegroundWindow()) != int(window.handle):
+            return False, "Notepad was found but could not be confirmed in the foreground; no text was typed."
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Could not confirm Notepad focus; no text was typed: {exc}"
+
+    try:
+        from pynput.keyboard import Controller
+
+        Controller().type(text)
+        time.sleep(0.25)
+        for control in _safe_descendants(window):
+            try:
+                control_type = control.element_info.control_type
+                if control_type not in ("Edit", "Document"):
+                    continue
+                try:
+                    actual = control.iface_value.CurrentValue
+                except Exception:  # noqa: BLE001 - some UIA providers omit ValuePattern
+                    actual = control.window_text()
+                if actual is not None:
+                    actual = str(actual)
+                    if actual == text:
+                        return True, f"Notepad readback matched exactly: {actual!r}"
+                    return False, (
+                        f"Notepad readback did not match; actual UIA value: {actual!r}"
+                    )
+            except Exception:  # noqa: BLE001
+                continue
+        return False, "Text was sent, but Notepad exposed no readable Edit/Document value to verify it."
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Typing or Notepad readback failed: {exc}"
 
 
 # -------------------------------------------------------------------------- click

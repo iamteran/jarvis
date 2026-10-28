@@ -18,8 +18,86 @@ import numpy as np
 import requests
 
 from .config import CONFIG
+import os
 
 log = logging.getLogger("gemini")
+
+
+class Ollama:
+    """Local Ollama provider for offline fallback.
+
+    Runs locally on http://localhost:11434 by default. Set OLLAMA_HOST to override.
+    Uses the same OpenAI-compatible /api/chat endpoint.
+    """
+
+    BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+    def __init__(self, model: str | None = None, base_url: str | None = None) -> None:
+        self.model = model or os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+        self.base_url = (base_url or self.BASE).rstrip("/")
+        self.http = requests.Session()
+        self.http.headers.update({"Content-Type": "application/json"})
+        self._timeout = 60.0
+
+    @staticmethod
+    def _to_messages(contents: list[dict], system: str | None) -> list[dict]:
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        for turn in contents:
+            role = "assistant" if turn.get("role") == "model" else turn.get("role", "user")
+            text = "".join(p.get("text", "") for p in turn.get("parts", []) if isinstance(p, dict))
+            if text:
+                messages.append({"role": role, "content": text})
+        return messages
+
+    def stream_text(self, model: str, contents: list[dict], *, system: str | None = None,
+                    temperature: float = 0.75, max_output_tokens: int = 400,
+                    timeout: float = 60.0):
+        payload = {
+            "model": model or self.model,
+            "messages": self._to_messages(contents, system),
+            "stream": True,
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+        }
+        with self.http.post(f"{self.base_url}/api/chat", json=payload,
+                            stream=True, timeout=timeout) as response:
+            if response.status_code != 200:
+                raise GeminiError(response.status_code, response.text[:300])
+            for raw in response.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                message = obj.get("message", {})
+                delta = message.get("content")
+                if delta:
+                    yield delta
+                if obj.get("done"):
+                    break
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, 
+             model: str | None = None,
+             temperature: float = 0.7, max_output_tokens: int = 600,
+             timeout: float = 90.0) -> dict:
+        payload: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        response = self.http.post(f"{self.base_url}/api/chat", json=payload, timeout=timeout)
+        if response.status_code != 200:
+            raise GeminiError(response.status_code, response.text[:300])
+        return response.json()
+
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 RETRYABLE = {429, 500, 502, 503, 504}
@@ -455,8 +533,8 @@ class Gemini:
                     return text
                 log.debug("model %s returned empty transcription", candidate)
             except GeminiError as exc:
-                if exc.status == 429:
-                    log.info("transcription model %s is out of quota; trying next", candidate)
+                if exc.status in (403, 429) or "insufficient_quota" in str(exc).lower():
+                    log.info("transcription model %s unavailable due to quota; trying next", candidate)
                 else:
                     log.warning("transcription via %s failed: %s", candidate, exc)
         return ""

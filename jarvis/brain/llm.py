@@ -18,7 +18,7 @@ import logging
 import time
 from typing import Iterator
 
-from ..ai import DeepSeek, Gemini, Grok, Groq, extract_text, function_calls, response_parts
+from ..ai import DeepSeek, Gemini, Grok, Groq, Ollama, extract_text, function_calls, response_parts
 from ..config import CONFIG
 from ..memory import Memory
 from ..tools import Tools
@@ -27,6 +27,14 @@ from .persona import system_prompt
 log = logging.getLogger("brain")
 
 MAX_TOOL_ROUNDS = 4
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    status = getattr(exc, "status", None)
+    text = str(exc).lower()
+    return status in (403, 429) or any(token in text for token in (
+        "insufficient_quota", "quota exceeded", "billing", "rate limit",
+    ))
 
 
 class Brain:
@@ -45,6 +53,12 @@ class Brain:
         if grok is None and CONFIG.grok_api_key:
             grok = Grok()
         self.grok = grok
+        # Ollama (local) - always available if running, no API key needed
+        if not hasattr(self, 'ollama'):
+            try:
+                self.ollama = Ollama()
+            except Exception:
+                self.ollama = None
         self.chain = chain or CONFIG.llm_chain
         self.override_system = system
         self.max_turns = max_turns or CONFIG.max_history_turns
@@ -84,6 +98,8 @@ class Brain:
                 providers.append((provider, self.groq, model))
             elif provider == "deepseek" and self.deepseek is not None:
                 providers.append((provider, self.deepseek, model))
+            elif provider == "ollama" and self.ollama is not None:
+                providers.append((provider, self.ollama, model))
         return providers
 
     def _text_providers(self) -> list[tuple[str, str]]:
@@ -134,8 +150,13 @@ class Brain:
                 return reply
             except Exception as exc:  # noqa: BLE001 - try the next provider
                 last_error = exc
-                self._note_failure(model)
-                log.warning("%s/%s tool turn failed (%s); trying next", provider, model, exc)
+                if _is_quota_error(exc):
+                    self._cooldown_until[model] = time.monotonic() + CONFIG.llm_model_cooldown_s
+                    self._fail_streak.pop(model, None)
+                    log.warning("%s/%s unavailable (quota/rate limit); trying next", provider, model)
+                else:
+                    self._note_failure(model)
+                    log.warning("%s/%s tool turn failed (%s); trying next", provider, model, exc)
         try:
             return self._gemini_tool_loop(actions)
         except Exception as exc:  # noqa: BLE001
@@ -274,8 +295,13 @@ class Brain:
                 return extract_text(data).strip() or "Done, sir."
             except Exception as exc:  # noqa: BLE001 - rate limit, DNS, SSL: next model
                 last_error = exc
-                self._note_failure(model)
-                log.warning("gemini/%s failed (%s); trying next", model, exc)
+                if _is_quota_error(exc):
+                    self._cooldown_until[model] = time.monotonic() + CONFIG.llm_model_cooldown_s
+                    self._fail_streak.pop(model, None)
+                    log.warning("gemini/%s unavailable (quota/rate limit); trying next", model)
+                else:
+                    self._note_failure(model)
+                    log.warning("gemini/%s failed (%s); trying next", model, exc)
         raise last_error or RuntimeError("no brain available")
 
     # ---------------------------------------------------------------- circuit breaker
@@ -308,8 +334,13 @@ class Brain:
                 providers.append((provider, model, self.groq))
             elif provider == "deepseek" and self.deepseek is not None:
                 providers.append((provider, model, self.deepseek))
+            elif provider == "ollama" and self.ollama is not None:
+                providers.append((provider, model, self.ollama))
         if not providers and CONFIG.gemini_api_key:
             providers.append(("gemini", CONFIG.chat_model, self.gemini))
+        # Last resort: local Ollama if available but not in chain
+        if not providers and self.ollama is not None:
+            providers.append(("ollama", self.ollama.model, self.ollama))
         return providers
 
     def _stream_reply(self) -> Iterator[str]:
@@ -346,8 +377,13 @@ class Brain:
                 return
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-                self._note_failure(model)
-                log.warning("%s/%s failed (%s); trying next", provider, model, exc)
+                if _is_quota_error(exc):
+                    self._cooldown_until[model] = time.monotonic() + CONFIG.llm_model_cooldown_s
+                    self._fail_streak.pop(model, None)
+                    log.warning("%s/%s unavailable (quota/rate limit); trying next", provider, model)
+                else:
+                    self._note_failure(model)
+                    log.warning("%s/%s failed (%s); trying next", provider, model, exc)
         if last_error is not None:
             raise last_error
 

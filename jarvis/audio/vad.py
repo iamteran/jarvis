@@ -64,14 +64,15 @@ class EnergyVAD:
         self._calibrated_frames += 1
 
         if ongoing:
-            hold = max(self.threshold * 0.6, self.noise * 1.12)
+            # Breaths and low-level room noise must not keep an utterance alive.
+            hold = max(self.threshold * 0.65, self.noise * 1.2)
             return level > hold
         return level > max(self.threshold, self.noise * self.noise_mult)
 
     @property
     def silence_level(self) -> float:
         """Level below which a started utterance counts as finished."""
-        return max(self.threshold * 0.6, self.noise * 1.12)
+        return max(self.threshold * 0.65, self.noise * 1.2)
 
 
 class Recorder:

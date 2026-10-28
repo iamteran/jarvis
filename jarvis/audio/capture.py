@@ -14,6 +14,7 @@ import numpy as np
 import sounddevice as sd
 
 from ..config import CONFIG
+from .noise_filter import make_noise_filter
 
 log = logging.getLogger("audio.capture")
 
@@ -29,6 +30,16 @@ def describe_devices() -> list[str]:
             kind.append("OUT")
         lines.append(f"[{idx:>2}] {'/'.join(kind):<7} {dev['name']}  ({dev['default_samplerate']:.0f} Hz)")
     return lines
+
+
+def describe_input_devices() -> list[str]:
+    """Return available microphone devices without listing output-only devices."""
+    return [
+        f"[{idx:>2}] {dev['name']} ({dev['max_input_channels']} ch, "
+        f"{dev['default_samplerate']:.0f} Hz)"
+        for idx, dev in enumerate(sd.query_devices())
+        if dev["max_input_channels"] > 0
+    ]
 
 
 def resolve_device(spec: str | None, kind: str) -> int | None:
@@ -62,6 +73,7 @@ class AudioHub:
         self.device_index: int | None = None
         self.device_name: str = "(default)"
         self.dropped = 0
+        self._noise_filter = make_noise_filter()
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -109,6 +121,7 @@ class AudioHub:
         time.sleep(0.4)
         try:
             self.start()
+            self._noise_filter.reset()
         except Exception as exc:  # noqa: BLE001 - keep trying on the next watchdog tick
             log.error("microphone restart failed: %s", exc)
 
@@ -122,6 +135,7 @@ class AudioHub:
                 log.debug("audio status: %s", status)
         block = np.array(indata[:, 0], dtype=np.int16, copy=True)
         self._ring.append(block)
+        block = self._noise_filter.process(block)
         try:
             self._queue.put_nowait(block)
         except queue.Full:

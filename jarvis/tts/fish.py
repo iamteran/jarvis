@@ -39,6 +39,13 @@ def decode_to_pcm(audio_bytes: bytes, rate: int) -> np.ndarray:
     return pcm
 
 
+def load_sound_file(path: str, rate: int = CONFIG.playback_rate) -> np.ndarray:
+    """Load an audio file (mp3/wav/ogg) from disk and decode to float32 mono PCM."""
+    from pathlib import Path
+    data = Path(path).read_bytes()
+    return decode_to_pcm(data, rate)
+
+
 class FishTTS:
     URL = "https://api.fish.audio/v1/tts"
 
@@ -47,12 +54,17 @@ class FishTTS:
         self.api_key = api_key or CONFIG.fish_api_key
         self.voice_id = voice_id or CONFIG.fish_voice_id
         self.model = model or CONFIG.fish_model
+        if not self.api_key:
+            raise TTSError("FISH_API_KEY is missing; set it in .env to use Fish Audio")
+        if not self.voice_id:
+            raise TTSError("FISH_VOICE_ID is missing; set it in .env to use Fish Audio")
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "model": self.model,
         })
+        self.session.headers["Authorization"] = "Bearer " + self.api_key
         self.last_latency_ms = 0.0
 
     def synthesize(self, text: str) -> bytes:

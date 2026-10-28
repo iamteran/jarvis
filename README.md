@@ -33,16 +33,54 @@ run_jarvis.bat
 First-time setup (already done on this machine): `install_jarvis.bat`, then put your keys
 in `.env` (see `.env.example`).
 
+### Talking avatar (Windows)
+
+Jarvis runs beside [AVATAR](https://github.com/ARPAHLS/avatar), a separate transparent
+VRM desktop overlay. Install the official [AVATAR 0.8.0 Windows release](https://github.com/ARPAHLS/avatar/releases/tag/v0.8.0).
+Double-click `run_jarvis.bat` in the project folder: it starts AVATAR if installed and not
+already running, then starts Jarvis with the old orb hidden.
+
+Jarvis retains its microphone, wake word, speech recognition, brain, tools, and tray/hotkey
+controls; AVATAR is its visible face, not a second assistant. In AVATAR, open **Gear →
+Voice** and select **Device output (auto)**. Under **Gear → Appearance → Environments**,
+select **None** so the desktop shows through. AVATAR drives the VRM mouth from local
+Windows output audio levels; this is amplitude-based movement, not phoneme-perfect lip
+sync. The green live dot should brighten while Jarvis speaks. Load a licensed `.vrm`
+model under **Settings → Directories → Avatars**; a still `.jpg` cannot provide a rigged
+mouth. Bundled sample models have their own asset terms, separate from AVATAR's MIT
+software license.
+
+Jarvis uses offline SAPI by default so replies do not depend on the Fish Audio service.
+To opt into Fish Audio, set `JARVIS_TTS=fish`, `FISH_API_KEY`, and
+`FISH_VOICE_ID=98655a12fa944e26b274c535e5e03842` in `.env`; text is sent remotely.
+If the key or voice ID is missing, or synthesis fails/times out, Jarvis logs the issue and
+uses offline SAPI for speech. `run_jarvis.bat`
+uses `JARVIS_SHOW_ORB=0` from `.env` to keep the orb hidden; set it to `1` there to restore
+the orb.
+
+Manual verification:
+
+1. Double-click `run_jarvis.bat`; confirm there is one AVATAR window and no Jarvis orb.
+2. Confirm the desktop shows through around the model. If not, set **Gear → Appearance →
+   Environments → None**.
+3. Confirm **Gear → Voice → Device output (auto)** is selected and the live dot responds
+   during speech.
+4. Say **“Hey Jarvis”**, give a command, and listen for the answer. Check
+   `data\logs\jarvis.log` for `Fish synthesis succeeded` to confirm Fish actually spoke;
+   a Fish failure/timeout warning or a missing-key message means offline SAPI was used.
+5. Run `.venv\Scripts\python.exe -m jarvis --status` to verify Jarvis and microphone health.
+
 ---
 
 ## Talk to it
 
 | You do | Jarvis does |
 | --- | --- |
-| Say **"Hey Jarvis"** | beeps, orb turns cyan, starts listening |
+| Say **"Hey Jarvis"** | beeps and starts listening |
 | Talk | records until you pause (~0.75 s of silence) |
 | "open chrome" / "open notepad" / "launch whatsapp" | opens it — **instantly, no network** |
 | **"open chrome and search youtube"** | does both actions, in order |
+| **"open YouTube, search for cats"** / "open YouTube, play a song" | recognizes common misheard search/play command words and routes the query to YouTube |
 | **"open crhome"** / "open youtub" | guesses the nearest installed app or known site and says what it assumed |
 | "go to youtube" / "open github.com" / "search for flights" | opens the browser |
 | "volume up" / "turn it down" / "mute" | changes system volume |
@@ -65,6 +103,10 @@ in `.env` (see `.env.example`).
 | Talk over it, or `Ctrl+Space` | interrupts it (barge-in) |
 | Stay quiet after an answer | 8 s follow-up window, then it sleeps |
 
+Speech autocorrection is limited to command phrases (for example, a misheard “search”
+immediately after “open YouTube”). It leaves the search or song title unchanged rather
+than guessing what you meant.
+
 ### Keys
 
 | Shortcut | Action |
@@ -72,9 +114,7 @@ in `.env` (see `.env.example`).
 | `Ctrl+Space` | listen now |
 | `Ctrl+Alt+J` | mute / unmute the mic |
 | `Ctrl+Alt+Esc` | panic stop |
-| Click orb | listen now |
-| Drag orb | move it (position remembered) |
-| Right-click orb | menu: listen, mute, quit |
+| Right-click tray icon | menu: listen, mute, quit |
 
 ---
 
@@ -132,12 +172,14 @@ Whisper is the better default here.
 | `JARVIS_LLM_CHAIN` | `grok:grok-4.7,gemini:gemini-3.5-flash-lite,gemini:gemini-3.5-flash` | provider:model order; missing keys are skipped |
 | `JARVIS_VISION_CHAIN` | `grok:grok-4.7,gemini:gemini-3-flash-preview` | screenshot provider:model order |
 | `JARVIS_STT_MODEL` | `gemini-3.5-flash` | Gemini speech-to-text (fallback `gemini-3.6-flash`) |
-| `JARVIS_TTS` | `sapi` | `sapi` offline · `edge` nicer British voice · `fish` your clone · `auto` edge→sapi |
+| `JARVIS_TTS` | `sapi` | `sapi` offline · `fish` your clone (SAPI fallback) · `edge` British neural · `auto` edge→sapi |
 | `JARVIS_EDGE_VOICE` | `en-GB-RyanNeural` | edge-tts voice |
-| `FISH_VOICE_ID` | — | your cloned Jarvis voice id (used only when `JARVIS_TTS=fish`) |
+| `FISH_VOICE_ID` | — | Fish Audio voice id (used only when `JARVIS_TTS=fish`) |
+| `JARVIS_FISH_BUDGET_MS` | `30000` | maximum time to wait for Fish before using SAPI |
 | `JARVIS_MIC` / `JARVIS_SPEAKER` | system default | index or name from `--devices` |
 | `JARVIS_WAKE_THRESHOLD` | `0.55` | lower = more sensitive |
 | `JARVIS_END_SILENCE_MS` | `750` | pause length that ends your sentence |
+| `JARVIS_SHOW_ORB` | `0` | set to `1` to restore the orb while keeping tray controls and hotkeys |
 | `JARVIS_SPEECH_RMS` | `0.018` | raise if it reacts to room noise |
 
 ---

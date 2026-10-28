@@ -109,6 +109,21 @@ def build_state() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.debug("pulse failed: %s", exc)
         system = {}
+    try:
+        from .activity import ActivityLog
+        activity = ActivityLog().recent(40)
+    except Exception:
+        activity = []
+    try:
+        from .memory import Memory
+        memory = Memory().stats()
+    except Exception:
+        memory = {}
+    try:
+        from .routines import RoutineStore
+        routines = RoutineStore().list()
+    except Exception:
+        routines = []
     return {
         "now": time.time(),
         "now_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -118,6 +133,9 @@ def build_state() -> dict[str, Any]:
         "calendar": {"today": today, "upcoming": upcoming},
         "email": inbox,
         "pulse": system,
+        "activity": activity,
+        "memory": memory,
+        "routines": routines,
     }
 
 

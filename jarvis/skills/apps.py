@@ -218,6 +218,22 @@ class AppLauncher:
 
     # -------------------------------------------------------------------- launch
     def launch_app(self, query: str) -> tuple[bool, str]:
+        if normalize(query) == "notepad":
+            # Notepad is an inbox app: avoid a stale Start-menu index or fuzzy match.
+            windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+            fallback = windir / "System32" / "notepad.exe"
+            try:
+                subprocess.Popen(["notepad.exe"])
+                log.info("launched Notepad with notepad.exe")
+                return True, "Started Notepad, sir."
+            except Exception as first_error:  # noqa: BLE001
+                try:
+                    subprocess.Popen([str(fallback)])
+                    log.info("launched Notepad with fallback path %s", fallback)
+                    return True, "Started Notepad, sir."
+                except Exception as exc:  # noqa: BLE001
+                    log.error("Notepad launch failed (%s; fallback: %s)", first_error, exc)
+                    return False, f"I couldn't start Notepad: {exc}"
         resolved = self._resolve(query)
         if resolved is None:
             compact = normalize(query).replace(" ", "")

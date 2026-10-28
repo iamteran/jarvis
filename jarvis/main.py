@@ -442,8 +442,7 @@ def cmd_run(show_orb: bool) -> int:
 
     jarvis_log.setup()
     if not _claim_single_instance():
-        print("\n  Jarvis is already running — look for the orb in the bottom-right,")
-        print("  or right-click its tray icon and choose Quit first.\n")
+        print("\n  Jarvis is already running — use its tray icon to control or quit it.\n")
         return 2    # distinct code: the supervisor must not retry this
     try:
         Jarvis(show_orb=show_orb).run()
@@ -564,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_say(args.say)
     if args.dashboard:
         return cmd_dashboard()
-    return cmd_run(show_orb=not args.no_orb)
+    return cmd_run(show_orb=CONFIG.show_orb and not args.no_orb)
 
 
 if __name__ == "__main__":

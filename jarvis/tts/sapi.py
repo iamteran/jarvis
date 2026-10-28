@@ -6,6 +6,7 @@ well under a second, no temp files, no network, no PowerShell start-up cost.
 from __future__ import annotations
 
 import logging
+import threading
 
 import numpy as np
 
@@ -25,11 +26,12 @@ class SapiTTS:
     def __init__(self, voice: str | None = None) -> None:
         self.voice_name = voice or _VOICE_HINTS.get(CONFIG.edge_voice[:5], "Microsoft Hazel Desktop")
         self.last_latency_ms = 0.0
-        self._voice = None
+        self._local = threading.local()
 
     def _ensure(self):
-        if self._voice is not None:
-            return self._voice
+        voice = getattr(self._local, "voice", None)
+        if voice is not None:
+            return voice
         import comtypes.client
 
         voice = comtypes.client.CreateObject("SAPI.SpVoice")
@@ -37,14 +39,23 @@ class SapiTTS:
             if self.voice_name.lower() in token.GetDescription().lower():
                 voice.Voice = token
                 break
-        self._voice = voice
+        self._local.voice = voice
         return voice
 
     def warm(self) -> None:
+        import comtypes
+
+        initialized = False
         try:
+            comtypes.CoInitialize()
+            initialized = True
             self._ensure()
         except Exception as exc:  # noqa: BLE001
             log.debug("SAPI warm-up failed: %s", exc)
+        finally:
+            self._local.voice = None
+            if initialized:
+                comtypes.CoUninitialize()
 
     def synthesize(self, text: str) -> bytes:
         """Render text to raw 22 kHz 16-bit mono PCM, in memory."""
@@ -54,20 +65,30 @@ class SapiTTS:
         import time
 
         started = time.perf_counter()
+        import comtypes
         import comtypes.client
 
-        voice = self._ensure()
-        memory = comtypes.client.CreateObject("SAPI.SpMemoryStream")
-        memory.Format.Type = SAFT22kHz16BitMono
-        voice.AudioOutputStream = memory
+        comtypes.CoInitialize()
+        voice = None
+        memory = None
         try:
-            voice.Speak(text)
-            audio = bytes(memory.GetData())
-        finally:
+            voice = self._ensure()
+            memory = comtypes.client.CreateObject("SAPI.SpMemoryStream")
+            memory.Format.Type = SAFT22kHz16BitMono
+            voice.AudioOutputStream = memory
             try:
-                voice.AudioOutputStream = None
-            except Exception:  # noqa: BLE001
-                pass
+                voice.Speak(text)
+                audio = bytes(memory.GetData())
+            finally:
+                try:
+                    voice.AudioOutputStream = None
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            self._local.voice = None
+            voice = None
+            memory = None
+            comtypes.CoUninitialize()
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return audio
 

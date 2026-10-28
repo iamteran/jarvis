@@ -11,6 +11,7 @@ sending messages go through a spoken confirmation gate first (see jarvis/safety.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import subprocess
@@ -27,7 +28,7 @@ class Tool:
     name: str
     description: str
     parameters: dict
-    run: Callable[..., str]
+    run: Callable[..., Any]
 
     def schema(self) -> dict:
         return {
@@ -38,6 +39,15 @@ class Tool:
                 "parameters": self.parameters,
             },
         }
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    ok: bool
+    detail: str
+
+    def to_json(self) -> str:
+        return json.dumps({"ok": self.ok, "detail": self.detail}, ensure_ascii=False)
 
 
 # ------------------------------------------------------------------------ schemas
@@ -88,19 +98,38 @@ class Tools:
     def execute(self, name: str, arguments: dict) -> str:
         tool = self._tools.get(name)
         if tool is None:
-            return f"Unknown tool {name!r}."
+            return ToolResult(False, f"Unknown tool {name!r}.").to_json()
         started = time.perf_counter()
         try:
             result = tool.run(**(arguments or {}))
+            if isinstance(result, ToolResult):
+                structured = result
+            elif isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
+                structured = ToolResult(result[0], str(result[1]))
+            else:
+                detail = str(result)
+                lowered = detail.casefold()
+                failed = any(marker in lowered for marker in (
+                    "couldn't", "could not", "failed", "can't", "unable to",
+                    "doesn't exist", "not found", "not installed", "no text was",
+                    "i did not", "error:",
+                ))
+                structured = ToolResult(not failed, detail)
+            text = structured.to_json()
             log.info("tool %s(%s) -> %.0f ms: %s", name, _short(arguments),
-                     (time.perf_counter() - started) * 1000, _short_text(result))
-            return str(result)
+                     (time.perf_counter() - started) * 1000, _short_text(text))
+            try:
+                from .activity import ActivityLog
+                ActivityLog().record("tool", name, detail=_short_text(text))
+            except Exception:
+                pass
+            return text
         except TypeError as exc:
             log.warning("tool %s bad arguments %s: %s", name, _short(arguments), exc)
-            return f"I couldn't call {name}: {exc}"
+            return ToolResult(False, f"Invalid arguments for {name}: {exc}").to_json()
         except Exception as exc:  # noqa: BLE001 - a failed tool must not kill the turn
             log.exception("tool %s failed", name)
-            return f"{name} failed: {exc}"
+            return ToolResult(False, f"{name} failed: {exc}").to_json()
 
     # -------------------------------------------------------------------- tools
     def _register_all(self) -> None:
@@ -152,6 +181,13 @@ class Tools:
             "Type text into the currently focused window.",
             _obj(text=_str("Exact text to type", True)),
             self._type_text,
+        ))
+        self.add(Tool(
+            "type_in_notepad",
+            "Open Notepad, type the supplied text only after confirming its foreground window, "
+            "then verify the exact text through UI Automation readback.",
+            _obj(text=_str("Exact text to type into Notepad", True)),
+            self._type_in_notepad,
         ))
         self.add(Tool(
             "press_keys",
@@ -317,6 +353,21 @@ class Tools:
             self._get_weather,
         ))
         self.add(Tool(
+            "play_youtube",
+            "Search YouTube and play the first matching video (opens in browser with autoplay).",
+            _obj(query=_str("Song or video to play, e.g. despacito, lo-fi beats", True)),
+            self._play_youtube,
+        ))
+        self.add(Tool(
+            "send_telegram_file",
+            "Send a file to the authorized Telegram chat (screenshots, documents, etc.).",
+            _obj(
+                file_path=_str("Absolute path to the file to send", True),
+                caption=_str("Optional caption for the file", False)
+            ),
+            self._send_telegram_file,
+        ))
+        self.add(Tool(
             "forget_memory",
             "Delete a fact from persistent memory that the user no longer wants remembered.",
             _obj(query=_str("The fact or topic to forget, e.g. 'cilantro preference'", True)),
@@ -400,12 +451,73 @@ class Tools:
                 self._cloud,
             ))
 
+        self.add(Tool(
+            "create_routine",
+            "Save a named routine made of fast local commands. Commands are separated by ' then '.",
+            _obj(name=_str("Routine name", True),
+                 commands=_str("Commands separated by ' then ', for example open chrome then open youtube", True)),
+            self._create_routine,
+        ))
+        self.add(Tool(
+            "run_routine",
+            "Run a saved routine by name.",
+            _obj(name=_str("Routine name", True)),
+            self._run_routine,
+        ))
+        self.add(Tool(
+            "list_routines",
+            "List saved routines.",
+            _obj(),
+            self._list_routines,
+        ))
+        self.add(Tool(
+            "delete_routine",
+            "Delete a saved routine.",
+            _obj(name=_str("Routine name", True)),
+            self._delete_routine,
+        ))
+
     # ------------------------------------------------------------------ handlers
-    def _open_app(self, app: str) -> str:
+    def _create_routine(self, name: str, commands: str) -> str:
+        from .routines import RoutineStore
+        parts = [part.strip() for part in commands.replace(";", " then ").split(" then ")]
+        key = RoutineStore().save(name, parts)
+        return f"Saved routine {key} with {len(parts)} steps, sir."
+
+    def _run_routine(self, name: str) -> str:
+        from .routines import RoutineStore
+        from .router import Router
+        router = Router()
+        def dispatch(command: str) -> str:
+            handled, reply = router.handle(command)
+            return reply if handled else f"I couldn't run: {command}"
+        replies = RoutineStore().run(name, dispatch)
+        return " ".join(replies)
+
+    def _list_routines(self) -> str:
+        from .routines import RoutineStore
+        rows = RoutineStore().list()
+        if not rows:
+            return "No routines saved yet, sir."
+        return "Saved routines: " + "; ".join(
+            f"{row['name']} ({len(row['commands'])} steps)" for row in rows)
+
+    def _delete_routine(self, name: str) -> str:
+        from .routines import RoutineStore
+        return (f"Deleted routine {name}, sir." if RoutineStore().delete(name)
+                else f"I couldn't find a routine called {name}, sir.")
+
+    def _open_app(self, app: str) -> ToolResult:
         from .skills.apps import AppLauncher
 
         ok, reply = AppLauncher().launch_app(app)
-        return reply
+        return ToolResult(ok, reply)
+
+    def _type_in_notepad(self, text: str) -> ToolResult:
+        from .skills import screen
+
+        ok, detail = screen.type_in_notepad(text)
+        return ToolResult(ok, detail)
 
     def _open_url(self, url: str) -> str:
         from .skills.apps import AppLauncher
@@ -518,8 +630,12 @@ class Tools:
 
         match = files.find_first(name)
         if match is None:
-            return f"I couldn't find a file matching {name}, sir."
-        return f"Found it: {match}"
+            return ToolResult(False, f"No matching path was found for {name}.")
+        return ToolResult(
+            True,
+            f"Found a matching path in the search results: {match}. "
+            "File access or contents have not been verified.",
+        )
 
     def _open_file(self, path: str) -> str:
         target = Path(path).expanduser()
@@ -702,6 +818,21 @@ class Tools:
             log.warning("weather tool failed: %s", exc)
             return "My weather source is unreachable at the moment, sir."
 
+    def _play_youtube(self, query: str) -> str:
+        from .skills.youtube import play
+
+        ok, detail = play(query)
+        return detail
+
+    def _send_telegram_file(self, file_path: str, caption: str = "") -> str:
+        bridge = getattr(self, "_telegram_bridge", None)
+        if bridge is None:
+            return "Telegram is not configured, sir."
+        if not getattr(bridge, "_allowed_user_id", None):
+            return "Telegram is not authorized for any user, sir."
+        ok = bridge.send_file(int(bridge._allowed_user_id), file_path, caption)
+        return "File sent to Telegram, sir." if ok else "Failed to send file to Telegram, sir."
+
     # ------------------------------------------------------------------- memory extras
     def _forget_memory(self, query: str) -> str:
         from .memory import Memory
@@ -718,10 +849,31 @@ class Tools:
         return f"Noted, sir. When you say \"{name}\", I'll understand you mean {target}."
 
     def _run_command(self, command: str, shell: str = "cmd", cwd: str = "") -> str:
+        """Run a shell command with safety confirmation for destructive actions.
+
+        Safety model:
+        - A blocklist of known dangerous commands triggers the Tier B spoken confirmation gate
+        - The gate is enforced in Python (safety.request) BEFORE the command runs
+        - The model CANNOT bypass this gate because the decision happens in tool code,
+          not in the LLM prompt. The model only provides the command string.
+        - RISK: This is a blocklist, not an allowlist. Unknown/novel destructive commands
+          not in the blocklist would run without confirmation. An allowlist was considered
+          but rejected as too restrictive for a diagnostic/fix tool. The blocklist covers
+          common Windows destructive operations; review periodically.
+        - We do NOT use shlex.quote because cmd.exe / PowerShell have different quoting
+          rules; instead we pass the command string directly to the appropriate shell.
+        """
         from . import safety
 
         cmd_lower = (command or "").lower()
-        dangerous = ["shutdown", "restart", "rmdir /s", "del /s", "format", "diskpart", "bcdedit", "reg delete", "cipher /w", "takeown /f"]
+        # Blocklist of known dangerous Windows commands. Must be lowercase for matching.
+        dangerous = [
+            "shutdown", "restart", "rmdir /s", "del /s", "format", "diskpart",
+            "bcdedit", "reg delete", "cipher /w", "takeown /f",
+            "rd /s", "erase /s", "attrib +h +s", "icacls /grant",
+            "wmic", "schtasks /delete", "net user /delete", "reg add",
+            "powershell -command remove-item", "remove-item -recurse",
+        ]
         if any(d in cmd_lower for d in dangerous):
             def _do() -> str:
                 return self._run_command_internal(command, shell, cwd)
@@ -828,7 +980,12 @@ class Tools:
                 err = (proc.stderr or "").strip()
                 text = out or err or ""
                 if proc.returncode == 0:
-                    return f"Done. Output:\n{text[:900]}" if text else "Done, sir. Command completed successfully."
+                    detail = (
+                        f"Remote command exited with code 0. Output (not independent verification):\n{text[:800]}"
+                        if text else
+                        "Remote command exited with code 0 and produced no output; requested outcome is unverified."
+                    )
+                    return ToolResult(True, detail)
                 msg = text or f"exit code {proc.returncode}"
                 return f"Command failed ({proc.returncode}): {msg[:700]}"
             if act == "ssh_cmd":
@@ -840,7 +997,12 @@ class Tools:
                 err = (proc.stderr or "").strip()
                 text = out or err or ""
                 if proc.returncode == 0:
-                    return f"Done. Output:\n{text[:900]}" if text else "Done, sir. Command completed successfully."
+                    detail = (
+                        f"Remote command exited with code 0. Output (not independent verification):\n{text[:800]}"
+                        if text else
+                        "Remote command exited with code 0 and produced no output; requested outcome is unverified."
+                    )
+                    return ToolResult(True, detail)
                 msg = text or f"exit code {proc.returncode}"
                 return f"Command failed ({proc.returncode}): {msg[:700]}"
             return "Unknown action. Use exec, status, files, publish, ssh_cmd, start, or stop."

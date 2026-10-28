@@ -12,7 +12,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent
+def _find_project_root() -> Path:
+    """Find the project root by looking for marker files."""
+    current = Path(__file__).resolve().parent
+    # Walk up the directory tree looking for project markers
+    for parent in [current] + list(current.parents):
+        if (parent / ".env.example").exists() or (parent / "pyproject.toml").exists() or (parent / ".git").exists():
+            return parent
+    # Fallback to the old behavior if no marker found
+    return current.parent
+
+ROOT = _find_project_root()
 DATA = ROOT / "data"
 LOGS = DATA / "logs"
 ASSETS = ROOT / "assets"
@@ -66,7 +76,8 @@ class Config:
         (part.split(":", 1)[0].strip(), part.split(":", 1)[1].strip())
         for part in _s("JARVIS_LLM_CHAIN",
                        "groq:llama-3.3-70b-versatile,deepseek:deepseek-chat,"
-                       "gemini:gemini-2.0-flash-lite,gemini:gemini-2.0-flash").split(",")
+                       "gemini:gemini-2.0-flash-lite,gemini:gemini-2.0-flash,"
+                       "ollama:llama3.2:3b").split(",")
         if ":" in part
     )
     chat_model: str = _s("JARVIS_CHAT_MODEL", llm_chain[0][1] if llm_chain else "gemini-2.0-flash-lite")
@@ -114,6 +125,8 @@ class Config:
     gmail_address: str = _s("GMAIL_ADDRESS")
     gmail_app_password: str = _s("GMAIL_APP_PASSWORD")
     email_poll_interval_s: int = _i("EMAIL_POLL_INTERVAL_S", 300)
+    telegram_bot_token: str = _s("JARVIS_TELEGRAM_BOT_TOKEN")
+    telegram_allowed_user_id: str = _s("JARVIS_TELEGRAM_ALLOWED_USER_ID")
 
     # ---- dashboard ----
     dashboard_port: int = _i("JARVIS_DASHBOARD_PORT", 8765)
@@ -133,17 +146,20 @@ class Config:
     # deafness, which made the room's own noise count as speech: silence never accumulated
     # and every utterance ran to `max_utterance_s` (measured: 21/21 clips were 10.32 s).
     # The values below sit above a normal laptop fan but well below quiet speech (~0.014).
-    speech_rms: float = _f("JARVIS_SPEECH_RMS", 0.008)   # speech onset threshold
-    noise_mult: float = _f("JARVIS_NOISE_MULT", 1.6)     # speech must beat the noise floor by this
-    noise_ceiling: float = _f("JARVIS_NOISE_CEILING", 0.006)  # floor can never rise past this
+    speech_rms: float = _f("JARVIS_SPEECH_RMS", 0.012)   # speech onset threshold
+    noise_mult: float = _f("JARVIS_NOISE_MULT", 2.0)     # speech must beat the noise floor by this
+    noise_ceiling: float = _f("JARVIS_NOISE_CEILING", 0.005)  # floor can never rise past this
     min_speech_ms: int = _i("JARVIS_MIN_SPEECH_MS", 160)  # below this an utterance is "not speech"
-    salvage_peak: float = _f("JARVIS_SALVAGE_PEAK", 0.0035)  # still transcribe if this loud
-    end_silence_ms: int = _i("JARVIS_END_SILENCE_MS", 650)
-    max_utterance_s: float = _f("JARVIS_MAX_UTTERANCE_S", 8.0)
+    salvage_peak: float = _f("JARVIS_SALVAGE_PEAK", 0.0025)  # quiet clips can still reach STT
+    # Give the user longer after wake and between phrases before endpointing.
+    end_silence_ms: int = _i("JARVIS_END_SILENCE_MS", 1800)
+    max_utterance_s: float = _f("JARVIS_MAX_UTTERANCE_S", 15.0)
     preroll_ms: int = _i("JARVIS_PREROLL_MS", 320)
+    tts_cooldown_ms: int = _i("JARVIS_TTS_COOLDOWN_MS", 300)
+    wake_word_enabled: bool = _s("JARVIS_WAKE_WORD", "1").lower() not in ("0", "false", "no")
     followup_ms: int = _i("JARVIS_FOLLOWUP_MS", 12000)
-    listen_start_timeout_ms: int = _i("JARVIS_LISTEN_START_MS", 1600)  # silence after wake = false alarm
-    barge_in: bool = _s("JARVIS_BARGE_IN", "1") not in ("0", "false", "False")
+    listen_start_timeout_ms: int = _i("JARVIS_LISTEN_START_MS", 5000)  # wait for speech after wake
+    barge_in: bool = _s("JARVIS_BARGE_IN", "0").lower() not in ("0", "false", "no")
 
     # ---- voice out ----
     tts_engine: str = _s("JARVIS_TTS", "auto")     # auto | piper | sapi | edge | fish
@@ -166,7 +182,7 @@ class Config:
     # ---- ui ----
     orb_size: int = _i("JARVIS_ORB_SIZE", 210)
     orb_margin: int = _i("JARVIS_ORB_MARGIN", 36)
-    show_orb: bool = _s("JARVIS_SHOW_ORB", "1") not in ("0", "false", "False")
+    show_orb: bool = _s("JARVIS_SHOW_ORB", "0") not in ("0", "false", "False")
 
     # ---- hotkeys ----
     hotkey_listen: str = _s("JARVIS_HOTKEY_LISTEN", "<ctrl>+<space>")
@@ -182,12 +198,6 @@ class Config:
                 "no brain: set at least one of GEMINI_API_KEY, DEEPSEEK_API_KEY, "
                 "GROQ_API_KEY or GROK_API_KEY in .env"
             )
-        # Fish credentials are only required if the user explicitly selected the fish engine.
-        if self.tts_engine.lower() == "fish":
-            if not self.fish_api_key:
-                problems.append("FISH_API_KEY is missing in .env (required because JARVIS_TTS=fish)")
-            if not self.fish_voice_id:
-                problems.append("FISH_VOICE_ID is missing in .env (required because JARVIS_TTS=fish)")
         # Gmail is optional; if partially configured, warn clearly
         if bool(self.gmail_address) != bool(self.gmail_app_password):
             problems.append("Set both GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env (or neither) to use email")

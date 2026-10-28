@@ -44,11 +44,12 @@ class _BudgetedTTS:
         # Start on the instant offline voice for the first minute; the start-up probe can
         # only *demote* us. That keeps the greeting immediate on a slow link and avoids
         # competing with the Whisper model load for the CPU.
-        self._degraded_until = time.monotonic() + 60.0
+        self._degraded_until = time.monotonic() + (60.0 if primary == "edge" else 0.0)
         self._in_flight = threading.Event()
         self._primary_engine = None
         self._fallback_engine = None
         self.last_latency_ms = 0.0
+        self._primary_confirmed = False
 
     def _get(self, kind: str):
         if kind == self._primary:
@@ -116,17 +117,25 @@ class _BudgetedTTS:
         worker.start()
         worker.join(timeout=self._budget_ms / 1000.0)
         if worker.is_alive():
-            log.info("%s voice exceeded its %.1f s budget; using %s for %ds",
+            log.warning("%s voice exceeded its %.1f s budget; using %s for %ds",
                      self._primary, self._budget_ms / 1000.0, self._fallback, self.DEGRADE_S)
             self._degraded_until = time.monotonic() + self.DEGRADE_S
             return fallback.synthesize_pcm(text, rate)
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         if "error" in result:
-            log.warning("%s voice failed (%s); using %s", self._primary,
+            log.warning("%s voice failed (%s); using %s", self._primary.capitalize(),
                         result["error"], self._fallback)
             self._degraded_until = time.monotonic() + self.DEGRADE_S
             return fallback.synthesize_pcm(text, rate)
-        return result.get("pcm") or fallback.synthesize_pcm(text, rate)
+        pcm = result.get("pcm")
+        if pcm is None or not len(pcm):
+            log.warning("%s voice returned no audio; using %s", self._primary, self._fallback)
+            return fallback.synthesize_pcm(text, rate)
+        if not self._primary_confirmed:
+            log.info("%s synthesis succeeded (%.0f ms); using the configured voice",
+                     self._primary.capitalize(), self.last_latency_ms)
+            self._primary_confirmed = True
+        return pcm
 
 
 def make_tts():
@@ -156,6 +165,19 @@ def make_tts():
         return _build("sapi")
 
     if engine in ("sapi", "edge", "fish"):
+        if engine == "fish":
+            if not CONFIG.fish_api_key or not CONFIG.fish_voice_id:
+                missing = []
+                if not CONFIG.fish_api_key:
+                    missing.append("FISH_API_KEY")
+                if not CONFIG.fish_voice_id:
+                    missing.append("FISH_VOICE_ID")
+                log.error("Fish Audio unavailable (%s missing); using offline SAPI",
+                          " and ".join(missing))
+                return _build("sapi")
+            log.info("voice: Fish Audio; SAPI will be used if Fish fails or exceeds %.1f s",
+                     CONFIG.fish_budget_ms / 1000)
+            return _BudgetedTTS("fish", "sapi", CONFIG.fish_budget_ms)
         return _build(engine)
 
     log.warning("unknown JARVIS_TTS=%r, using SAPI", engine)

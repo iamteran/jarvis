@@ -60,6 +60,7 @@ SHOW_DESKTOP_RE = re.compile(r"^(?:show|open|go to)\s*(?:the\s+)?desktop\b.*$", 
 MINIMISE_RE = re.compile(r"^(?:minimi[sz]e|hide)\s+(?:everything|all|all windows|the windows?|everything else)\b.*$", re.I)
 CLICK_RE = re.compile(r"^click\s+(?:on\s+)?(?:the\s+)?(?P<name>.+?)\s*(?:button|link|tab|item)?\s*$", re.I)
 TYPE_RE = re.compile(r"^(?:type|write|enter)\s*[:\s]\s*(?P<text>.+)$", re.I)
+TYPE_NOTEPAD_RE = re.compile(r"^(?:type|write|enter)\s+(?P<text>.+?)\s+into\s+notepad\s*$", re.I)
 SWITCH_RE = re.compile(r"^(?:switch to|bring up|focus|activate|go to window)\s+(?P<win>.+?)\s*$", re.I)
 READ_SCREEN_RE = re.compile(r"^(?:what(?:'s| is) on (?:the )?screen|read (?:the )?(?:screen|window)|what does (?:this|the) window say)\b", re.I)
 VISION_RE = re.compile(
@@ -98,6 +99,13 @@ def _is_generic_title(title: str) -> bool:
 SITE_SEARCH_RE = re.compile(
     r"^(?:open|go to|launch)\s+(?P<site>youtube|google)\s+and\s+"
     r"(?P<verb>search|play|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s*$", re.I)
+OPEN_YOUTUBE_ACTION_RE = re.compile(
+    r"^(?:open|go to|launch)\s+(?:youtube|you\s*tube)(?:['’]s)?\s+"
+    r"(?P<verb>search|such|sutch|serch|sarch|searchh|play|put on|start playing)\s*"
+    r"(?P<query>.+?)\s*$", re.I)
+OPEN_THEN_ACTION_RE = re.compile(
+    r"^(?:open|launch|start|run|fire up)\s+(?P<app>.+?)\s+"
+    r"(?P<action>(?:search|look up|find|play|put on|start playing)\s+.+)$", re.I)
 PLAY_RE = re.compile(r"^(?:play|put on|start playing)\s+(?P<query>.+?)(?:\s+on youtube)?\s*$", re.I)
 SEARCH_ON_RE = re.compile(
     r"^(?:search|look up|find)\s+(?:for\s+)?(?P<query>.+?)\s+on\s+(?P<site>youtube|google)\s*$", re.I)
@@ -153,10 +161,17 @@ EMAIL_SUMMARY_RE = re.compile(
 
 
 def _repair_accent(text: str) -> str:
-    """Quietly normalise common accent/mic mishearings."""
+    """Quietly normalise common accent/mic mishearings in commands."""
     out = text or ""
     for pattern, repl in _ACCENT_REPAIRS:
         out = pattern.sub(repl, out)
+    out = re.sub(
+        r"^((?:open|go to|launch)\s+(?:youtube|you\s*tube)(?:['’]s)?\s+)"
+        r"(?:such|sutch|serch|sarch|searchh)\b",
+        r"\1search",
+        out,
+        flags=re.I,
+    )
     return out
 
 
@@ -272,6 +287,22 @@ class Router:
                 match.group("query"),
                 play=match.group("verb").lower() == "play",
             )
+        match = OPEN_YOUTUBE_ACTION_RE.match(clean)
+        if match:
+            return True, self._site_search(
+                "youtube",
+                match.group("query"),
+                play=match.group("verb").lower() in {"play", "put on", "start playing"},
+            )
+        match = OPEN_THEN_ACTION_RE.match(clean)
+        if match and not re.search(r"\band\b", match.group("app"), re.I):
+            opened, open_reply = self.handle("open " + match.group("app").strip())
+            acted, action_reply = self.handle(match.group("action").strip())
+            replies = [reply for handled, reply in (
+                (opened, open_reply), (acted, action_reply),
+            ) if handled and reply]
+            if replies:
+                return True, " ".join(replies)
         match = SEARCH_ON_RE.match(clean)
         if match:
             return True, self._site_search(match.group("site"), match.group("query"))
@@ -365,6 +396,10 @@ class Router:
         match = CLICK_RE.match(clean)
         if match:
             return True, screen_skill.click_control(match.group("name").strip())
+        match = TYPE_NOTEPAD_RE.match(clean)
+        if match:
+            ok, detail = screen_skill.type_in_notepad(match.group("text"))
+            return True, detail if ok else f"I couldn't verify the Notepad typing: {detail}"
         match = TYPE_RE.match(clean)
         if match:
             return True, screen_skill.type_text(match.group("text").strip())

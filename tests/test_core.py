@@ -171,6 +171,59 @@ class TestRouter(TempDBTest):
         self.assertEqual(launched, ["chrome"], "only the app clause should launch an app")
         self.assertEqual([s.lower() for s in sites], ["youtube"])
 
+    def test_open_app_search_and_play_without_and_before_search(self) -> None:
+        launched: list[str] = []
+        sites: list[str] = []
+        played: list[str] = []
+        self.router.apps.launch_app = lambda q: launched.append(q) or (True, f"[launch {q}]")
+        self.router.apps.open_site = lambda q: sites.append(q) or (True, f"[site {q}]")
+        with mock.patch("jarvis.skills.youtube.play",
+                        side_effect=lambda q: played.append(q) or (True, f"[play {q}]")):
+            handled, reply = self.router.handle(
+                "open chrome search youtube and play bud for bud")
+
+        self.assertTrue(handled)
+        self.assertEqual(launched, ["chrome"])
+        self.assertEqual(sites, ["youtube"])
+        self.assertEqual(played, ["bud for bud"])
+        self.assertIn("[play bud for bud]", reply)
+
+    def test_open_youtube_search_with_possessive_misheard_as_such(self) -> None:
+        calls: list[tuple[str, str, bool]] = []
+        with mock.patch.object(
+                self.router, "_site_search",
+                side_effect=lambda site, query, play=False:
+                    calls.append((site, query, play)) or "Searching YouTube."):
+            handled, reply = self.router.handle("open youtube's such bonful band")
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("youtube", "bonful band", False)])
+        self.assertIn("Searching", reply)
+
+    def test_autocorrects_misheard_search_word_only_in_youtube_command(self) -> None:
+        calls: list[tuple[str, str, bool]] = []
+        with mock.patch.object(
+                self.router, "_site_search",
+                side_effect=lambda site, query, play=False:
+                    calls.append((site, query, play)) or "Searching YouTube."):
+            handled, reply = self.router.handle("open youtube's serch bonful band")
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("youtube", "bonful band", False)])
+        self.assertIn("Searching", reply)
+
+    def test_open_youtube_play_without_space_after_play(self) -> None:
+        calls: list[tuple[str, str, bool]] = []
+        with mock.patch.object(
+                self.router, "_site_search",
+                side_effect=lambda site, query, play=False:
+                    calls.append((site, query, play)) or "Playing on YouTube."):
+            handled, reply = self.router.handle("open youtube playbud fubud")
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [("youtube", "bud fubud", True)])
+        self.assertIn("Playing", reply)
+
     def test_misheard_search_is_repaired(self) -> None:
         launched: list[str] = []
         sites: list[str] = []
@@ -438,6 +491,135 @@ class TestYouTubeSearch(unittest.TestCase):
         }
         self.assertEqual(_first_video_id(payload), "abc12345678")
         self.assertIsNone(_first_video_id({"contents": []}))
+
+
+class TestAvatarAndVoiceConfig(unittest.TestCase):
+    def test_saved_orb_setting_is_respected_by_default_launch(self) -> None:
+        from jarvis import main
+
+        with mock.patch.object(main, "CONFIG") as config, \
+                mock.patch.object(main, "cmd_run", return_value=0) as cmd_run:
+            config.show_orb = False
+            self.assertEqual(main.main([]), 0)
+        cmd_run.assert_called_once_with(show_orb=False)
+
+    def test_no_orb_flag_also_hides_orb_when_config_enables_it(self) -> None:
+        from jarvis import main
+
+        with mock.patch.object(main, "CONFIG") as config, \
+                mock.patch.object(main, "cmd_run", return_value=0) as cmd_run:
+            config.show_orb = True
+            self.assertEqual(main.main(["--no-orb"]), 0)
+        cmd_run.assert_called_once_with(show_orb=False)
+
+    def test_hidden_orb_does_not_disable_startup_speech(self) -> None:
+        from jarvis.app import Jarvis
+
+        with mock.patch.multiple(
+                "jarvis.app",
+                EchoGuard=mock.DEFAULT,
+                EnergyVAD=mock.DEFAULT,
+                Gemini=mock.DEFAULT,
+                Ears=mock.DEFAULT,
+                Brain=mock.DEFAULT,
+                Router=mock.DEFAULT,
+                make_tts=mock.DEFAULT,
+                Player=mock.DEFAULT,
+                Speaker=mock.DEFAULT):
+            jarvis = Jarvis(show_orb=False)
+
+        self.assertFalse(jarvis.show_orb)
+        self.assertTrue(jarvis.greeting)
+
+    def test_fish_uses_configured_api_key_for_authorization(self) -> None:
+        from jarvis.tts.fish import FishTTS
+
+        fish = FishTTS(api_key="test-key", voice_id="test-voice")
+        self.assertTrue(fish.session.headers["Authorization"].startswith("Bearer "))
+        self.assertTrue(fish.session.headers["Authorization"].endswith("test-key"))
+
+    def test_fish_requires_credentials_when_constructed(self) -> None:
+        from jarvis.tts.fish import FishTTS, TTSError
+
+        with mock.patch("jarvis.tts.fish.CONFIG") as config:
+            config.fish_api_key = ""
+            config.fish_voice_id = ""
+            with self.assertRaisesRegex(TTSError, "FISH_API_KEY"):
+                FishTTS()
+
+    def test_fish_failure_uses_sapi_and_logs_the_reason(self) -> None:
+        import numpy as np
+
+        from jarvis.tts.factory import _BudgetedTTS
+
+        class Fish:
+            def synthesize_pcm(self, _text, _rate):
+                raise RuntimeError("service unavailable")
+
+        class Sapi:
+            def synthesize_pcm(self, _text, _rate):
+                return np.array([0.25], dtype=np.float32)
+
+        engine = _BudgetedTTS("fish", "sapi", 1000)
+        with mock.patch.object(engine, "_get", side_effect=lambda name: (
+                Fish() if name == "fish" else Sapi())):
+            with self.assertLogs("tts.factory", level="WARNING") as logs:
+                audio = engine.synthesize_pcm("hello", 24000)
+
+        self.assertEqual(audio.tolist(), [0.25])
+        self.assertIn("Fish voice failed", logs.output[0])
+
+    def test_successful_fish_audio_preserves_numpy_pcm(self) -> None:
+        import numpy as np
+
+        from jarvis.tts.factory import _BudgetedTTS
+
+        expected = np.array([0.1, 0.2], dtype=np.float32)
+
+        class Fish:
+            def synthesize_pcm(self, _text, _rate):
+                return expected
+
+        engine = _BudgetedTTS("fish", "sapi", 1000)
+        with mock.patch.object(engine, "_get", side_effect=lambda _name: Fish()):
+            actual = engine.synthesize_pcm("hello", 24000)
+
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_sapi_initializes_com_on_the_synthesis_thread(self) -> None:
+        import types
+
+        from jarvis.tts.sapi import SapiTTS
+
+        class Memory:
+            class Format:
+                Type = None
+
+            @staticmethod
+            def GetData():
+                return b"\x00\x00"
+
+        class Voice:
+            AudioOutputStream = None
+
+            @staticmethod
+            def Speak(_text):
+                return None
+
+        comtypes = types.ModuleType("comtypes")
+        comtypes.CoInitialize = mock.Mock()
+        comtypes.CoUninitialize = mock.Mock()
+        client = types.ModuleType("comtypes.client")
+        client.CreateObject = mock.Mock(return_value=Memory())
+        comtypes.client = client
+
+        engine = SapiTTS()
+        with mock.patch.dict(sys.modules, {"comtypes": comtypes, "comtypes.client": client}), \
+                mock.patch.object(engine, "_ensure", return_value=Voice()):
+            self.assertEqual(engine.synthesize("Testing"), b"\x00\x00")
+
+        comtypes.CoInitialize.assert_called_once_with()
+        comtypes.CoUninitialize.assert_called_once_with()
 
 
 if __name__ == "__main__":

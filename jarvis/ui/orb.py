@@ -34,6 +34,8 @@ COLORS = {
                   "glow": "#041520", "glow2": "#07253a", "accent": "#00d4ff"},
     "listening": {"ring": "#006a8a", "bright": "#00d8ff", "core": "#c8f8ff",
                   "glow": "#002a38", "glow2": "#004055", "accent": "#ffffff"},
+    "transcribing": {"ring": "#164b70", "bright": "#4db8ff", "core": "#d8f1ff",
+                  "glow": "#061626", "glow2": "#0b2942", "accent": "#8ed8ff"},
     "thinking":  {"ring": "#5a3d00", "bright": "#e8a800", "core": "#ffe066",
                   "glow": "#1a1000", "glow2": "#2a1c00", "accent": "#ffcc00"},
     "speaking":  {"ring": "#004466", "bright": "#00ccff", "core": "#e0faff",
@@ -47,10 +49,10 @@ COLORS = {
 }
 
 # Spin speed (deg/frame) per state
-SPIN = {"booting": 2.8, "idle": 0.25, "listening": 2.4, "thinking": 4.5, "speaking": 1.8,
+SPIN = {"booting": 2.8, "idle": 0.25, "listening": 2.4, "transcribing": 3.2, "thinking": 4.5, "speaking": 1.8,
         "followup": 0.7, "muted": 0.0, "error": 0.0}
 # Core breathe amplitude
-PULSE = {"booting": 0.038, "idle": 0.018, "listening": 0.072, "thinking": 0.042,
+PULSE = {"booting": 0.038, "idle": 0.018, "listening": 0.072, "transcribing": 0.055, "thinking": 0.042,
          "speaking": 0.090, "followup": 0.028, "muted": 0.0, "error": 0.012}
 
 # Ring layout: (radius_factor, arc_extent, spin_multiplier, base_angle, stroke_width)
@@ -68,6 +70,7 @@ _STATE_LABELS = {
     "booting": "initialising",
     "idle": "standing by",
     "listening": "listening",
+    "transcribing": "decoding voice",
     "thinking": "thinking",
     "speaking": "speaking",
     "followup": "follow-up",
