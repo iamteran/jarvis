@@ -4,16 +4,18 @@ A voice assistant that lives on this laptop. Say **"Hey Jarvis"**, talk normally
 answers out loud — and it can act on the machine: open apps and sites, change volume, lock
 the screen, tell the time.
 
-**Status: Phases 1-2 complete, Phase 3 mostly done - voice loop, desktop control, 45-tool
-model-driven toolbelt, persistent memory, Grok vision, files, reminders, Gmail drafts and a
-live local dashboard.**
+**Status: Phases 1-3 complete - voice loop, desktop control, 70+ tool model-driven toolbelt,
+persistent memory, Grok vision, files, reminders, Gmail drafts, live local dashboard,
+Telegram remote control, skills system, video downloads, social publishing, knowledge vault,
+coding agent.**
 
 ### What Jarvis can do right now
 
 - **Hear you offline.** Local Whisper (`faster-whisper tiny.en`) transcribes on this CPU in
   ~2 s with no network and no quota. Verified against quiet-mic/noisy-room levels.
-- **Act on its own judgement.** 30 tools (apps, sites, windows, clicks, typing, keys,
-  volume, lock, files, vision, reminders, memory, undo) and the model chooses which to call.
+- **Act on its own judgement.** 70+ tools (apps, sites, windows, clicks, typing, keys,
+  volume, lock, files, vision, reminders, memory, undo, skills, video downloads, social
+  publishing, knowledge search, code exploration) and the model chooses which to call.
 - **See.** `look_at_screen` captures the screen and answers about it (verified: described
   the live desktop correctly). Accessibility reading stays for exact, instant text.
 - **Remember.** Facts in SQLite, injected into every conversation, surviving restarts.
@@ -21,6 +23,104 @@ live local dashboard.**
   token comes from the interface, never from the model.
 - **Behave like a desktop app.** One instance (named mutex), autostart shortcut, tray icon,
   floating orb, hotkeys, reminders that speak when due.
+
+---
+
+### 🤖 Telegram Remote Control
+
+Control Jarvis from anywhere via Telegram. The bot runs as a long-poll bridge:
+
+| Command | What it does |
+|---|---|
+| `/start` | Shows your authorized user ID and confirms the bot is running |
+| `/id` | Returns your Telegram user ID (for `.env` configuration) |
+| Any other message | Forwards to Jarvis as a voice command; replies come back in chat |
+
+**Setup:** Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_USER_ID` to `.env`. Only the authorized user ID can send commands.
+
+**Examples from your phone:**
+- "open chrome and search for python tutorials"
+- "what's on my screen right now"
+- "remind me to call the bank in 30 minutes"
+- "run health check"
+- "download video https://instagram.com/reel/..."
+
+---
+
+### 🎬 Video Downloader (Instagram, TikTok, X, YouTube)
+
+Download videos from social media links — watermark-free when possible.
+
+| Tool | Description |
+|---|---|
+| `video_info` | Get metadata (title, duration, thumbnail, available formats) without downloading |
+| `download_video` | Download a video; auto-picks best quality or specify format; watermark-free for TikTok/Reels |
+| `list_downloads` | Show recent downloads with file paths |
+
+**Usage via Telegram:** Send any Instagram Reel, TikTok, YouTube Short, or X/Twitter video link — Jarvis downloads it and sends the file back to you in chat.
+
+---
+
+### 📱 Social Publishing (Instagram Stories & WhatsApp Status)
+
+Post directly from local files to Instagram Stories and WhatsApp Status with format validation.
+
+| Tool | Description |
+|---|---|
+| `instagram_connect` | Link an Instagram account (stores session securely) |
+| `instagram_publish_story` | Post an image/video to Stories; validates 9:16 aspect, ≤60s video, ≤30MB |
+| `instagram_list_accounts` | Show connected Instagram accounts |
+| `whatsapp_publish_status` | Post image/video/text to WhatsApp Status |
+| `whatsapp_check` | Verify WhatsApp Web session is active |
+
+**Usage via Telegram:** "post this image to my Instagram story" (attach the image in Telegram chat).
+
+---
+
+### 🧠 Knowledge Vault (Local Full-Text Search)
+
+Search across your Documents, Downloads, and Desktop folders instantly.
+
+| Tool | Description |
+|---|---|
+| `index_knowledge` | Build/update the search index (PDF, DOCX, TXT, MD, XLSX, PPTX) |
+| `search_knowledge` | Full-text search with snippet previews |
+| `knowledge_stats` | Index size, file count, last updated |
+
+---
+
+### 💻 Coding Agent (Git Repository Exploration)
+
+Explore and modify codebases from Telegram or voice.
+
+| Tool | Description |
+|---|---|
+| `list_repo_files` | List files in a repo (respects `.gitignore`) |
+| `read_repo_file` | Read any file's contents |
+| `search_repo_code` | Ripgrep-style code search |
+| `get_repo_info` | Branch, remotes, last commit, dirty files |
+| `write_repo_file` | Create new files |
+| `edit_repo_file` | Edit existing files (string replace) |
+| `apply_patch` | Apply unified diff patches |
+| `run_repo_tests` | Run test suite (pytest, npm test, etc.) |
+| `run_repo_command` | Run arbitrary commands in repo directory |
+
+---
+
+### 🛠 Skills System (Sandboxed Extensions)
+
+Create custom capabilities with a permissioned sandbox:
+
+| Tool | Description |
+|---|---|
+| `create_skill` | Write a new Python skill with declared permissions |
+| `test_skill` | Run a skill in the sandbox with a test payload |
+| `list_skills` | Show all skills with approval status |
+| `approve_skill` | Grant a skill permanent approval |
+| `reject_skill` | Revoke approval |
+| `get_skill` | View a skill's source and permissions |
+
+Skills declare exactly what they can access (files, network, shell, etc.) — nothing runs without approval.
 
 ---
 
